@@ -1,0 +1,3 @@
+# cmd.exe needs CRLF line endings in batch files (also applies to GitHub's ZIP downloads)
+*.bat text eol=crlf
+*.png binary

@@ -1,0 +1,77 @@
+# Maple EXP Tracker
+
+A small always-on-top window for MapleStory that reads the EXP text on your
+screen and shows:
+
+- current EXP and %
+- EXP per minute / per hour
+- estimated time to level
+- EXP gained and levels this session
+
+It only looks at the screen (like a screenshot); it doesn't touch the game.
+
+## Download (easiest)
+
+Grab **`MapleExpTracker.exe`** from the
+[latest release](https://github.com/tleytek/maple-exp-tracker/releases/latest)
+and double-click it. Nothing else to install.
+
+Windows SmartScreen may say "Windows protected your PC" because the exe isn't
+code-signed. Click **More info → Run anyway**.
+
+## Run from source
+
+1. Install **Python 3** from <https://www.python.org/downloads/>.
+   In the installer, tick **"Add python.exe to PATH"**.
+2. Download this repo (green **Code** button → **Download ZIP**, then unzip),
+   or `git clone` it.
+3. Double-click **`run.bat`**.
+
+The first run takes about a minute while it installs its packages. After that
+it opens straight away.
+
+To build the exe yourself, run **`build.bat`**. It writes
+`dist\MapleExpTracker.exe`.
+
+## Usage
+
+1. Click **Select Region**, then drag a box around the EXP text at the bottom
+   of the game, e.g. `EXP. 11,886 [41.01%]`. Include both green brackets
+   `[ ]`.
+2. Check the **Watching** preview: it should show the EXP text.
+3. Play. The numbers update every half second.
+
+| Control | Action |
+|---|---|
+| Select Region | Pick where the EXP text is |
+| Reset | Start a new session |
+| Pause | Stop reading the screen |
+| Always on top | Keep the window above the game |
+| F1 | Reset the rate |
+| F2 | Hide / show the window |
+
+Tips:
+
+- Hovering the mouse over the EXP bar shows a tooltip that covers the text;
+  reading pauses until it's gone.
+- If you change resolution or move the game window, use **Select Region**
+  again.
+- The rate resets after 60 seconds with no EXP change, and on level-up.
+- Settings are saved in `%APPDATA%\MapleExpTracker`.
+
+## How the reading works
+
+The game's EXP line uses a tiny pixel font whose `,` and `.` are detached
+dots, which general OCR (e.g. Tesseract) misreads. `expocr.py` reads it
+directly instead: it finds the green brackets, cuts the line into
+characters, and recognises each digit by its shape (holes and stroke
+positions). Results that don't look like `1,234 [12.34%]` are discarded rather
+than shown wrong.
+
+Run the tests with:
+
+```
+.venv\Scripts\python.exe test_expocr.py
+```
+
+Real captures named `<exp>_<percent>[_note].png` in `tests/` are checked too.

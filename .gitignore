@@ -1,0 +1,13 @@
+# Python environments
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# PyInstaller output (the exe is published as a GitHub Release asset)
+build/
+dist/
+*.spec
+
+# Per-user settings (screen position of the EXP text)
+region.json

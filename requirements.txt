@@ -1,0 +1,4 @@
+mss>=9.0
+pillow>=10.0
+numpy>=1.26
+keyboard>=0.13
