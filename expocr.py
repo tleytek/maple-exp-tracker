@@ -120,7 +120,9 @@ def classify_digit(gray):
     # (rows 0.2-0.4 sit between the top bar and the middle bar)
     upper_left = box(0.2, 0.4, 0.0, 0.3)
     upper_right = box(0.2, 0.4, 0.7, 1.0)
-    if box(0.0, 0.15) >= 0.6 and box(0.5, 1.0, 0.5, 1.0) < 0.15:
+    # 7: full top bar and nothing at all on the left below it
+    # (its diagonal stroke ends near the middle column)
+    if box(0.0, 0.15) >= 0.6 and box(0.2, 1.0, 0.0, 0.3) == 0:
         return "7"
     if box(0.85, 1.0) >= 0.7:
         return "2"

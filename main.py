@@ -35,7 +35,8 @@ REGION_FILE = os.path.join(DATA_DIR, "region.json")
 LEGACY_REGION_FILE = os.path.join(APP_DIR, "region.json")  # pre-exe location
 
 POLL_RATE = 0.5  # seconds between screen reads
-CONFIRM_READS = 3  # identical reads needed to accept a big jump (e.g. level-up)
+CONFIRM_READS = 3  # matching reads needed to accept a level-up
+ADOPT_READS = 20  # matching reads (~10s) needed to replace a wrong level-max estimate
 IDLE_RESET_SECONDS = 60  # rate window resets after this long with no EXP change
 MIN_REGION_SIZE = 5  # pixels
 
@@ -104,7 +105,11 @@ class RateTracker:
         self.rate = None  # EXP per minute
         self.change_log = deque(maxlen=1000)
         self.last_change_time = time.time()
-        self.pending = None
+        # EXP needed for the current level, as an interval narrowed by every
+        # accepted (exp, percent) reading. Used to reject inconsistent reads.
+        self.max_range = None
+        self.pending_kind = None
+        self.pending_range = None
         self.pending_count = 0
         self.session_start = time.time()
         self.session_gained = 0
@@ -125,39 +130,93 @@ class RateTracker:
             return None
         return delta / (elapsed / 60)
 
-    def feed(self, now, current, percent):
-        """Process one OCR reading. Returns a log message or None."""
+    @staticmethod
+    def _implied_max(current, percent):
+        """Range of level-max EXP consistent with 'current' at 'percent' (2-dp rounded).
+
+        Returns None when the percent is too small to say anything useful.
+        """
+        if percent < 0.5:
+            return None
+        lo = current * 100 / (percent + 0.005)
+        hi = current * 100 / (percent - 0.005)
+        slack = 0.002 * hi + 1  # tolerate truncation vs rounding in the game
+        return (lo - slack, hi + slack)
+
+    @staticmethod
+    def _overlap(a, b):
+        return a[0] <= b[1] and b[0] <= a[1]
+
+    def _accept(self, now, current, percent, implied):
+        if implied is not None:
+            if self.max_range and self._overlap(self.max_range, implied):
+                self.max_range = (max(self.max_range[0], implied[0]),
+                                  min(self.max_range[1], implied[1]))
+            else:
+                self.max_range = implied
+        self.pending_kind, self.pending_range, self.pending_count = None, None, 0
         msg = None
-        if current is not None and current != self.prev:
-            accept = True
-            if self.prev is not None and abs(current - self.prev) > 0.2 * max(self.prev, 1):
-                # OCR misread or real level-up: require CONFIRM_READS identical reads.
-                if current == self.pending:
+        if self.prev is not None and current < self.prev:
+            # same level but less EXP: died (EXP penalty). Restart the rate.
+            self.change_log.clear()
+            msg = f"EXP dropped {self.prev:,} → {current:,} — rate restarted"
+        elif self.prev is not None:
+            self.session_gained += current - self.prev
+        if current != self.prev:
+            self.change_log.append((now, current))
+            self.rate = self._calculate_rate()
+            self.last_change_time = now
+        self.prev = self.current = current
+        self.percent = percent
+        return msg
+
+    def feed(self, now, current, percent):
+        """Process one OCR reading. Returns a log message or None.
+
+        A reading is trusted when its EXP and % agree with the level's max EXP
+        learned so far, so a misread digit in either number is rejected. A
+        reading that disagrees is only accepted once it's been seen
+        CONFIRM_READS times in a row (level-up), or ADOPT_READS times (the
+        earlier max was itself wrong).
+        """
+        msg = None
+        if current is not None and percent is not None:
+            implied = self._implied_max(current, percent)
+            mx = self.estimated_max
+            # A big drop can only be a level-up (death costs ~10% at most).
+            level_up = (self.prev is not None and current < self.prev and mx
+                        and self.prev - current > 0.3 * mx)
+            if not level_up and (implied is None or self.max_range is None
+                                 or self._overlap(self.max_range, implied)):
+                msg = self._accept(now, current, percent, implied)
+            else:
+                kind = "lvl" if level_up else "max"
+                same = (self.pending_kind == kind and (
+                    level_up or (self.pending_range and implied
+                                 and self._overlap(self.pending_range, implied))))
+                if same:
                     self.pending_count += 1
+                    if implied and self.pending_range:
+                        self.pending_range = (max(self.pending_range[0], implied[0]),
+                                              min(self.pending_range[1], implied[1]))
+                    elif implied:
+                        self.pending_range = implied
                 else:
-                    self.pending, self.pending_count = current, 1
-                if self.pending_count < CONFIRM_READS:
-                    accept = False
-                    msg = f"Ignoring jump {self.prev:,} → {current:,} (unconfirmed)"
-                else:
-                    if current < self.prev:
+                    self.pending_kind, self.pending_range, self.pending_count = kind, implied, 1
+                need = CONFIRM_READS if level_up else ADOPT_READS
+                if self.pending_count >= need:
+                    pending = self.pending_range
+                    self.max_range, self.change_log = None, deque(maxlen=1000)
+                    if level_up:
                         self.levels += 1
-                        self.session_gained += current
+                        self.session_gained += max(0, int(round(mx)) - self.prev) + current
                         msg = f"Level up! ({self.prev:,} → {current:,})"
                     else:
-                        self.session_gained += current - self.prev
-                    self.change_log.clear()
-            elif self.prev is not None and current > self.prev:
-                self.session_gained += current - self.prev
-            if accept:
-                self.pending, self.pending_count = None, 0
-                self.change_log.append((now, current))
-                self.rate = self._calculate_rate()
-                self.last_change_time = now
-                self.prev = self.current = current
-                self.percent = percent
-        elif current is not None and percent is not None:
-            self.percent = percent
+                        msg = "Level EXP re-synced"
+                    self.prev = None  # gain already counted
+                    self._accept(now, current, percent, pending)
+                elif self.pending_count == 1 and not level_up:
+                    msg = f"Ignoring inconsistent read {current:,} [{percent:.2f}%]"
 
         if now - self.last_change_time > IDLE_RESET_SECONDS and self.change_log:
             self.change_log.clear()
@@ -168,6 +227,8 @@ class RateTracker:
 
     @property
     def estimated_max(self):
+        if self.max_range:
+            return sum(self.max_range) / 2
         if self.current and self.percent:
             return self.current / (self.percent / 100)
         return None
