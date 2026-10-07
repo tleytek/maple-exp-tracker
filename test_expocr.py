@@ -92,7 +92,7 @@ def main():
     cap_dir = os.path.join(HERE, "tests")
     if os.path.isdir(cap_dir):
         for f in sorted(os.listdir(cap_dir)):
-            if not f.endswith(".png"):
+            if not f.endswith(".png") or f.startswith("fullbar_"):
                 continue
             exp_s, pct_s = f[:-4].split("_")[:2]
             from PIL import Image
@@ -103,6 +103,30 @@ def main():
                 print(f"FAIL capture {f}: got {got}")
             else:
                 print(f"ok   capture {f}")
+
+    # 4. Region-placement mistakes, on a real full-screen capture: the app grabs
+    #    a padded box, so tight / misaligned / generous selections still work.
+    full_path = os.path.join(cap_dir, "fullbar_22726_78.42.png")
+    if os.path.exists(full_path):
+        from PIL import Image
+        from main import padded
+        full = np.array(Image.open(full_path).convert("RGB"))
+        screen = {"left": 0, "top": 0, "width": full.shape[1], "height": full.shape[0]}
+        # crop is the bottom strip of a 2560x1440 screen starting at y=1340
+        cases = {
+            "cuts off ]": {"left": 1352, "top": 32, "width": 209, "height": 34},
+            "cuts off EXP digits": {"left": 1400, "top": 32, "width": 200, "height": 34},
+            "cuts top of text": {"left": 1340, "top": 45, "width": 260, "height": 20},
+            "includes HP/MP text": {"left": 1300, "top": 10, "width": 340, "height": 70},
+        }
+        for name, r in cases.items():
+            p = padded(r, screen)
+            got = expocr.read(full[p["top"]:p["top"] + p["height"], p["left"]:p["left"] + p["width"]])
+            if got[:2] != (22726, 78.42):
+                failures += 1
+                print(f"FAIL region '{name}': got {got}")
+            else:
+                print(f"ok   region '{name}'")
 
     print("ALL PASS" if not failures else f"{failures} FAILURE(S)")
     return 1 if failures else 0

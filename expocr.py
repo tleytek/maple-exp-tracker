@@ -142,17 +142,47 @@ def segment(rgb):
     Returns (exp_glyphs, pct_glyphs); each glyph is ('sep', None) or
     ('digit', gray_image). Returns None if the layout isn't recognised.
     """
+    for seg, _ in _candidates(rgb):
+        if seg is not None:
+            return seg
+    return None
+
+
+def _brackets(rgb):
     # Brackets are tall, narrow green blobs. (The EXP bar below is also green
     # but wide, so it's filtered out by shape.)
-    brackets = sorted(
+    return sorted(
         (c for c in _components(_green_mask(rgb), diagonal=True)
          if 6 <= c["height"] <= 80 and c["width"] <= c["height"] // 2),
         key=lambda c: c["left"])
+
+
+def _candidates(rgb):
+    """Yield (segmentation, reason) for each adjacent bracket pair, right to
+    left. A generous region can include other bracketed UI text (HP/MP), so
+    the caller keeps the first pair that reads as a valid EXP line."""
+    brackets = _brackets(rgb)
+    if not brackets:
+        yield None, "no green [ ] brackets in the region"
+        return
     if len(brackets) < 2:
-        return None
-    lbs, rbs = brackets[0], brackets[-1]
-    if abs(lbs["top"] - rbs["top"]) > 2:
-        return None
+        b = brackets[0]
+        ink = rgb.max(axis=2) >= THRESH
+        band = ink[b["top"]:b["top"] + b["height"]]
+        right_of = band[:, b["left"] + b["width"]:].sum()
+        left_of = band[:, :b["left"]].sum()
+        # '[' has the percentage after it; ']' has nothing after it
+        side = "right" if right_of > left_of * 0.3 else "left"
+        yield None, f"only one bracket found; the {side} side of the text is cut off"
+        return
+    for i in range(len(brackets) - 2, -1, -1):
+        prev_right = (brackets[i - 1]["left"] + brackets[i - 1]["width"]) if i > 0 else 0
+        yield _segment_pair(rgb, brackets[i], brackets[i + 1], prev_right)
+
+
+def _segment_pair(rgb, lbs, rbs, x_start):
+    if abs(lbs["top"] - rbs["top"]) > 2 or abs(lbs["height"] - rbs["height"]) > 2:
+        return None, "brackets don't line up (something covering the text?)"
     lb_l = lbs["left"]
     lb_r = lb_l + lbs["width"]
     rb_l = rbs["left"]
@@ -181,11 +211,13 @@ def segment(rgb):
                 out.append(("digit", gray[y0:y1, s:e]))
         return out
 
-    exp_g = glyphs(0, lb_l, True)
+    exp_g = glyphs(x_start, lb_l, True)
     pct_g = glyphs(lb_r, rb_l, False)
-    if not exp_g or not pct_g or pct_g[-1][0] != "digit":
-        return None
-    return exp_g, pct_g[:-1]  # drop '%'
+    if not exp_g:
+        return None, "no EXP number left of the [ bracket"
+    if not pct_g or pct_g[-1][0] != "digit":
+        return None, "no percentage inside the brackets"
+    return (exp_g, pct_g[:-1]), "ok"  # drop '%'
 
 
 def _to_text(glyphs, sep_char):
@@ -212,18 +244,27 @@ def _valid_pct(s):
     return whole.isdigit() and len(frac) == 2 and frac.isdigit() and float(s) <= 100
 
 
+def _read_pair(seg):
+    exp_s = _to_text(seg[0], ",")
+    pct_s = _to_text(seg[1], ".")
+    if exp_s is None:
+        return None, None, "unrecognised digit in the EXP number"
+    if pct_s is None:
+        return None, None, "unrecognised digit in the percentage"
+    if not _valid_exp(exp_s):
+        return None, None, f"EXP read as {exp_s!r}, which isn't a valid number"
+    if not _valid_pct(pct_s):
+        return None, None, f"percentage read as {pct_s!r}, which isn't valid"
+    return int(exp_s.replace(",", "")), float(pct_s), "ok"
+
+
 def read(rgb):
     """Return (exp:int|None, percent:float|None, status:str)."""
     rgb = np.asarray(rgb)
-    seg = segment(rgb)
-    if seg is None:
-        return None, None, "layout"
-    exp_s = _to_text(seg[0], ",")
-    pct_s = _to_text(seg[1], ".")
-    if exp_s is None or pct_s is None:
-        return None, None, "glyph"
-    if not _valid_exp(exp_s):
-        return None, None, f"bad exp {exp_s!r}"
-    if not _valid_pct(pct_s):
-        return None, None, f"bad pct {pct_s!r}"
-    return int(exp_s.replace(",", "")), float(pct_s), "ok"
+    first_error = None
+    for seg, why in _candidates(rgb):
+        result = _read_pair(seg) if seg is not None else (None, None, why)
+        if result[2] == "ok":
+            return result
+        first_error = first_error or result
+    return first_error

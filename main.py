@@ -79,6 +79,19 @@ def grab(sct, region):
     return Image.frombytes("RGB", shot.size, shot.rgb)
 
 
+def padded(region, screen):
+    """Grow the selected box a bit so a slightly-too-tight selection still
+    contains both brackets. Anything extra around the text is ignored by the
+    reader (it anchors on the brackets and drops the "EXP" logo)."""
+    px = max(16, region["width"] // 4)
+    py = max(6, region["height"] // 3)
+    left = max(screen["left"], region["left"] - px)
+    top = max(screen["top"], region["top"] - py)
+    right = min(screen["left"] + screen["width"], region["left"] + region["width"] + px)
+    bottom = min(screen["top"] + screen["height"], region["top"] + region["height"] + py)
+    return {"left": left, "top": top, "width": right - left, "height": bottom - top}
+
+
 def screen_capturer():
     """mss renamed mss.mss -> mss.MSS in 10.x; support both."""
     if hasattr(mss, "MSS"):
@@ -419,13 +432,55 @@ class App:
         ttk.Checkbutton(opts, text="Always on top", variable=self.on_top,
                         command=self._apply_on_top).pack(side=tk.LEFT)
         self._apply_on_top()
+        self.show_log = tk.BooleanVar(value=False)
+        ttk.Checkbutton(opts, text="Show log", variable=self.show_log,
+                        command=self._toggle_log).pack(side=tk.LEFT, padx=(12, 0))
 
         self.status = tk.StringVar(value="Starting…")
         tk.Label(self.root, textvariable=self.status, bg=self.BG, fg=self.DIM,
                  font=("Segoe UI", 9), anchor="w", wraplength=380, justify="left",
                  ).pack(fill=tk.X, pady=(6, 8), **pad)
+
+        # Log panel (hidden until "Show log" is ticked)
+        self.log_frame = tk.Frame(self.root, bg=self.BG)
+        self.log_text = tk.Text(self.log_frame, height=10, bg="#0d0e11", fg=self.FG,
+                                font=("Consolas", 9), relief="flat", wrap="word",
+                                state="disabled")
+        scroll = ttk.Scrollbar(self.log_frame, command=self.log_text.yview)
+        self.log_text.config(yscrollcommand=scroll.set)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._last_log_key = None
+        self._repeat = 0
+
         tk.Label(self.root, text="F1 reset · F2 hide/show", bg=self.BG, fg="#555",
                  font=("Segoe UI", 8)).pack(side=tk.BOTTOM, pady=(0, 4))
+
+    def _toggle_log(self):
+        if self.show_log.get():
+            self.log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 6))
+        else:
+            self.log_frame.pack_forget()
+            self.root.geometry("")  # shrink back
+
+    def log(self, text, key=None):
+        """Append a line to the log. Lines with the same key collapse into a
+        single updating line, so a repeated failure doesn't flood the log."""
+        stamp = time.strftime("%H:%M:%S")
+        t = self.log_text
+        t.config(state="normal")
+        if key is not None and key == self._last_log_key:
+            self._repeat += 1
+            t.delete("end-2l", "end-1l")
+            t.insert("end", f"{stamp}  {text}  (×{self._repeat})\n")
+        else:
+            self._last_log_key, self._repeat = key, 1
+            t.insert("end", f"{stamp}  {text}\n")
+            lines = int(t.index("end-1c").split(".")[0])
+            if lines > 500:
+                t.delete("1.0", f"{lines - 500}.0")
+        t.see("end")
+        t.config(state="disabled")
 
     def _apply_on_top(self):
         self.root.attributes("-topmost", self.on_top.get())
@@ -488,12 +543,13 @@ class App:
     # ---- background OCR ------------------------------------------------- #
     def _worker_loop(self):
         with screen_capturer() as sct:  # capture objects are per-thread
+            screen = sct.monitors[0]
             while self.running:
                 start = time.time()
                 region = self.region
                 if region and not self.paused:
                     try:
-                        img = grab(sct, region)
+                        img = grab(sct, padded(region, screen))
                         current, percent, how = extract_number(img)
                         self.results.put(("reading", (time.time(), current, percent, how, img)))
                     except Exception as e:
@@ -506,22 +562,34 @@ class App:
                 kind, payload = self.results.get_nowait()
                 if kind == "reading":
                     now, current, percent, how, img = payload
+                    before = (self.tracker.current, self.tracker.percent)
                     msg = self.tracker.feed(now, current, percent)
                     if current is None:
                         self.misses += 1
+                        self.log(f"can't read: {how}", key=how)
                         if self.misses == 6:  # ~3s of failed reads
-                            self.set_status("Can't read EXP — check the region "
-                                            "(include both green [ ] brackets).")
+                            self.set_status(f"Can't read EXP — {how}. "
+                                            "Use Select Region to fix.")
                     else:
                         if self.misses >= 6:
                             self.set_status("Reading EXP.")
                         self.misses = 0
+                        after = (self.tracker.current, self.tracker.percent)
+                        if after != before:
+                            rate = self.tracker.rate
+                            self.log(f"read {current:,} [{percent:.2f}%]"
+                                     + (f"  rate {rate:,.0f}/min" if rate else ""))
+                        elif (current, percent) != after:
+                            self.log(f"ignored {current:,} [{percent:.2f}%] "
+                                     f"(doesn't match level EXP)", key="ignored")
                     if msg:
                         self.set_status(msg)
+                        self.log(msg)
                     self._show_preview(img)
                     self._refresh()
                 elif kind == "error":
                     self.set_status(f"Error: {payload}")
+                    self.log(f"error: {payload}", key="error")
                 elif kind == "hotkey":
                     if payload == "reset":
                         self.tracker.reset_rate()
