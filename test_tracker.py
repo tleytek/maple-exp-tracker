@@ -32,14 +32,20 @@ def main():
     now = 0
     for exp in range(22000, 22700, 26):
         t.feed(now, exp, pct(exp)); now += 5
-    rate_before, eta_before = t.rate, t.eta_minutes
+    rate_before = t.rate
+    ref = RateTracker()  # same stream, but the 5s read correctly
+    ref_now = 0
+    for exp in range(22000, 22700, 26):
+        ref.feed(ref_now, exp, pct(exp)); ref_now += 5
+    for _ in range(10):
+        ref.feed(ref_now, 22676, pct(22676)); ref_now += 0.5
     for _ in range(10):  # 5s of the misread, % read correctly
         t.feed(now, 22326, pct(22726)); now += 0.5
     fails += check("misread digit ignored", t.current >= 22674, t.current)
     fails += check("rate unchanged by misread", abs(t.rate - rate_before) < 1e-6,
                    f"{rate_before} -> {t.rate}")
-    fails += check("ETA unchanged by misread", abs(t.eta_minutes - eta_before) < 1,
-                   f"{eta_before} -> {t.eta_minutes}")
+    fails += check("ETA unaffected by misread", abs(t.eta_minutes - ref.eta_minutes) < 0.01,
+                   f"{ref.eta_minutes} vs {t.eta_minutes}")
 
     # 3. Misread in the percent instead.
     t.feed(now, 22726, 38.42); now += 0.5
@@ -71,6 +77,91 @@ def main():
     t.feed(now, 19000, pct(19000)); now += 0.5
     fails += check("death loss accepted", t.current == 19000, t.current)
     fails += check("death doesn't count as level", t.levels == 0, t.levels)
+
+    # 6. The reported problem: after a long fast session, a few slow minutes
+    #    must show up in the recent rate even though the average barely moves.
+    t = RateTracker()
+    now, exp = 0, 1000
+    big_max = 10_000_000
+    while now < 3600:  # 1 hour at 600 EXP/min (50 EXP every 5s)
+        t.feed(now, exp, pct(exp, big_max)); now += 5; exp += 50
+    fails += check("recent rate ~600/min while fast",
+                   abs(t.rolling_rate(now) - 600) < 15, t.rolling_rate(now))
+    end_fast = now
+    while now < end_fast + 300:  # 5 min at 60 EXP/min (5 EXP every 5s)
+        t.feed(now, exp, pct(exp, big_max)); now += 5; exp += 5
+    fails += check("recent rate drops to ~60/min", abs(t.rolling_rate(now) - 60) < 15,
+                   t.rolling_rate(now))
+    fails += check("average still high (old behaviour)", t.rate > 500, t.rate)
+
+    # 7. Recent rate keeps decaying between gains (uses 'now', not last gain).
+    t = RateTracker()
+    for i in range(61):  # 5 min at 120/min
+        exp = 20000 + 10 * i
+        t.feed(i * 5, exp, pct(exp))
+    r_now = t.rolling_rate(300)
+    r_later = t.rolling_rate(300 + 50)  # 50s with no gain
+    fails += check("recent rate decays with no gains", r_later < r_now * 0.9,
+                   f"{r_now} -> {r_later}")
+
+    # 8. Recent rate runs straight through a level-up.
+    t = RateTracker()
+    now = 0
+    for exp in range(28000, 28980, 98):
+        t.feed(now, exp, pct(exp)); now += 5
+    for _ in range(5):
+        t.feed(now, 50, pct(50, 32000)); now += 0.5
+    fails += check("recent rate survives level-up",
+                   t.rolling_rate(now) and t.rolling_rate(now) > 0, t.rolling_rate(now))
+
+    # 9. No recent rate from a handful of seconds of history.
+    t = RateTracker()
+    t.feed(0, 20000, pct(20000)); t.feed(2, 20500, pct(20500))
+    fails += check("no recent rate from 2s of data", t.rolling_rate(2) is None,
+                   t.rolling_rate(2))
+
+    # 10. Being idle doesn't reset tracking: both rates keep their history.
+    t = RateTracker()
+    for i in range(61):  # 5 min at 120/min
+        exp = 20000 + 10 * i
+        t.feed(i * 5, exp, pct(exp))
+    for s in range(300, 480):  # 3 min standing still, readings keep coming
+        t.feed(s, 20600, pct(20600))
+    fails += check("idle keeps average", t.rate and abs(t.rate - 120) < 1, t.rate)
+    fails += check("idle lowers recent rate, not reset",
+                   t.rolling_rate(480) is not None and 30 < t.rolling_rate(480) < 60,
+                   t.rolling_rate(480))
+    t.feed(480, 20610, pct(20610))
+    fails += check("average includes idle time after next gain",
+                   abs(t.rate - 610 / 8) < 2, t.rate)
+
+    # 11. Rolling totals for 1 / 5 / 60 minutes.
+    t = RateTracker()
+    now, exp = 0, 1000
+    while now <= 3600:  # 1 hour at 600 EXP/min (50 EXP every 5s)
+        t.feed(now, exp, pct(exp, 10_000_000)); now += 5; exp += 50
+    end_fast = now - 5
+    while now <= end_fast + 120:  # then 2 min at 60 EXP/min
+        t.feed(now, exp, pct(exp, 10_000_000)); now += 5; exp += 5
+    now -= 5
+    g1, s1 = t.gained_in(now, 60)
+    g5, s5 = t.gained_in(now, 300)
+    g60, s60 = t.gained_in(now, 3600)
+    fails += check("1 min total ~60 after slowdown", abs(g1 - 60) <= 5 and s1 == 60, (g1, s1))
+    fails += check("5 min total = 2 slow + 3 fast min", abs(g5 - (2 * 60 + 3 * 600)) <= 50
+                   and s5 == 300, (g5, s5))
+    fails += check("60 min total = 2 slow + 58 fast min",
+                   abs(g60 - (2 * 60 + 58 * 600)) <= 60 and s60 == 3600, (g60, s60))
+    g1_later, _ = t.gained_in(now + 60, 60)
+    fails += check("1 min total drops to 0 after a minute of nothing", g1_later == 0, g1_later)
+
+    # 12. Windows that aren't full yet report how much time they cover.
+    t = RateTracker()
+    for i in range(25):  # 2 min at 120/min
+        exp = 20000 + 10 * i
+        t.feed(i * 5, exp, pct(exp))
+    g60, s60 = t.gained_in(120, 3600)
+    fails += check("partial 60-min window", g60 == 240 and s60 == 120, (g60, s60))
 
     print("ALL PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0

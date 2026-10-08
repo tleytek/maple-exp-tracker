@@ -4,7 +4,7 @@ A small always-on-top window for MapleStory that reads the EXP text on your
 screen and shows:
 
 - current EXP and %
-- EXP per minute / per hour
+- EXP gained in the last 1, 5 and 60 minutes (rolling), plus the average EXP per minute
 - estimated time to level
 - EXP gained and levels this session
 
@@ -56,7 +56,12 @@ Tips:
   reading pauses until it's gone.
 - If you change resolution or move the game window, use **Select Region**
   again.
-- The rate resets after 60 seconds with no EXP change, and on level-up.
+- **EXP / 1 min**, **5 min** and **60 min** are the EXP you actually gained in
+  that much time up to now, so they drop as soon as you slow down. Until a
+  window has filled, the time it covers so far is shown in brackets, e.g.
+  `13,750 (23m)`. Time to level uses your pace over the last 5 minutes.
+- Nothing resets when you're idle: idle time counts against the numbers. The
+  average restarts on level-up, death, Reset and F1.
 - Settings are saved in `%APPDATA%\MapleExpTracker`.
 
 ## How the reading works

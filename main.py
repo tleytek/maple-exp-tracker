@@ -37,7 +37,9 @@ LEGACY_REGION_FILE = os.path.join(APP_DIR, "region.json")  # pre-exe location
 POLL_RATE = 0.5  # seconds between screen reads
 CONFIRM_READS = 3  # matching reads needed to accept a level-up
 ADOPT_READS = 20  # matching reads (~10s) needed to replace a wrong level-max estimate
-IDLE_RESET_SECONDS = 60  # rate window resets after this long with no EXP change
+ROLLING_WINDOWS = (60, 300, 3600)  # seconds: rolling "EXP gained in the last …"
+ROLLING_WINDOW = 300  # window whose pace drives the time-to-level estimate
+ROLLING_MIN_SPAN = 30  # don't estimate a pace from less history than this
 MIN_REGION_SIZE = 5  # pixels
 
 
@@ -117,7 +119,6 @@ class RateTracker:
         self.percent = None
         self.rate = None  # EXP per minute
         self.change_log = deque(maxlen=1000)
-        self.last_change_time = time.time()
         # EXP needed for the current level, as an interval narrowed by every
         # accepted (exp, percent) reading. Used to reject inconsistent reads.
         self.max_range = None
@@ -127,11 +128,49 @@ class RateTracker:
         self.session_start = time.time()
         self.session_gained = 0
         self.levels = 0
+        # (time, session_gained) on every accepted change. Uses total gained
+        # rather than raw EXP so the rolling rate runs straight through
+        # level-ups and deaths.
+        self.gain_log = deque()
+        self.last_seen = None  # time of the latest reading
 
     def reset_rate(self):
         self.change_log.clear()
+        self.gain_log.clear()
         self.rate = None
-        self.last_change_time = time.time()
+
+    def _prune_gain_log(self, now):
+        # keep one sample at/before the longest window's start: it's the EXP
+        # total at that moment
+        oldest = now - max(ROLLING_WINDOWS)
+        while len(self.gain_log) >= 2 and self.gain_log[1][0] <= oldest:
+            self.gain_log.popleft()
+
+    def gained_in(self, now, window):
+        """EXP gained in the last 'window' seconds up to 'now'.
+
+        Returns (gained, span): span is less than 'window' while there isn't
+        that much history yet. None when nothing has been read. Measured up to
+        'now', so it keeps falling while nothing is being gained.
+        """
+        self._prune_gain_log(now)
+        if not self.gain_log:
+            return None
+        start = now - window
+        base_t, base_g = self.gain_log[0]
+        for t, g in reversed(self.gain_log):
+            if t <= start:  # EXP total at the window start
+                base_t, base_g = start, g
+                break
+        return max(0, self.session_gained - base_g), min(now - base_t, window)
+
+    def rolling_rate(self, now, window=ROLLING_WINDOW):
+        """EXP per minute over the last 'window' seconds, up to 'now'."""
+        got = self.gained_in(now, window)
+        if got is None or got[1] < ROLLING_MIN_SPAN:
+            return None
+        gained, span = got
+        return gained / (span / 60)
 
     def _calculate_rate(self):
         if len(self.change_log) < 2:
@@ -178,7 +217,8 @@ class RateTracker:
         if current != self.prev:
             self.change_log.append((now, current))
             self.rate = self._calculate_rate()
-            self.last_change_time = now
+            self.gain_log.append((now, self.session_gained))
+            self._prune_gain_log(now)
         self.prev = self.current = current
         self.percent = percent
         return msg
@@ -193,6 +233,7 @@ class RateTracker:
         earlier max was itself wrong).
         """
         msg = None
+        self.last_seen = now
         if current is not None and percent is not None:
             implied = self._implied_max(current, percent)
             mx = self.estimated_max
@@ -231,11 +272,7 @@ class RateTracker:
                 elif self.pending_count == 1 and not level_up:
                     msg = f"Ignoring inconsistent read {current:,} [{percent:.2f}%]"
 
-        if now - self.last_change_time > IDLE_RESET_SECONDS and self.change_log:
-            self.change_log.clear()
-            self.rate = None
-            self.last_change_time = now
-            msg = f"No EXP change for {IDLE_RESET_SECONDS}s — rate reset"
+        # No reset when idle: time without gains counts against both rates.
         return msg
 
     @property
@@ -248,9 +285,15 @@ class RateTracker:
 
     @property
     def eta_minutes(self):
+        """Time to level at the recent (rolling) pace, falling back to the
+        average while there isn't enough recent history yet."""
         mx = self.estimated_max
-        if mx and self.rate:
-            return (mx - self.current) / self.rate
+        rate = None
+        if self.last_seen is not None:
+            rate = self.rolling_rate(self.last_seen)
+        rate = rate or self.rate
+        if mx and rate:
+            return (mx - self.current) / rate
         return None
 
 
@@ -390,8 +433,10 @@ class App:
         rows = [
             ("exp", "EXP"),
             ("percent", "Progress"),
-            ("rate_min", "EXP / min"),
-            ("rate_hour", "EXP / hour"),
+            ("gain_60", "EXP / 1 min"),
+            ("gain_300", "EXP / 5 min"),
+            ("gain_3600", "EXP / 60 min"),
+            ("rate_min", "EXP / min (average)"),
             ("eta", "Time to level"),
             ("gained", "Gained (session)"),
             ("session", "Session"),
@@ -401,7 +446,7 @@ class App:
                      font=("Segoe UI", 10)).grid(row=i, column=0, sticky="w", pady=1)
             var = tk.StringVar(value="—")
             self.vars[key] = var
-            big = key in ("exp", "rate_min")
+            big = key in ("exp", "gain_60")
             tk.Label(stats, textvariable=var, bg=self.BG,
                      fg=self.ACCENT if big else self.FG,
                      font=("Consolas", 14 if big else 12, "bold" if big else "normal"),
@@ -577,8 +622,14 @@ class App:
                         after = (self.tracker.current, self.tracker.percent)
                         if after != before:
                             rate = self.tracker.rate
+                            parts = []
+                            for w, name in ((60, "1m"), (300, "5m")):
+                                got = self.tracker.gained_in(now, w)
+                                if got:
+                                    parts.append(f"{name} +{got[0]:,}")
                             self.log(f"read {current:,} [{percent:.2f}%]"
-                                     + (f"  rate {rate:,.0f}/min" if rate else ""))
+                                     + "".join(f"  {p}" for p in parts)
+                                     + (f"  avg {rate:,.0f}/min" if rate else ""))
                         elif (current, percent) != after:
                             self.log(f"ignored {current:,} [{percent:.2f}%] "
                                      f"(doesn't match level EXP)", key="ignored")
@@ -608,6 +659,7 @@ class App:
         elapsed = (time.time() - self.tracker.session_start) / 60
         self.vars["session"].set(fmt_minutes(elapsed) +
                                  (f" · {self.tracker.levels} lvl" if self.tracker.levels else ""))
+        self._refresh_recent()  # keeps decaying even if readings stop
         self.root.after(1000, self._tick)
 
     def _show_preview(self, img):
@@ -623,9 +675,24 @@ class App:
         self.vars["percent"].set(f"{t.percent:.2f}%" if t.percent is not None else "—")
         self.progress["value"] = t.percent or 0
         self.vars["rate_min"].set(fmt_int(t.rate))
-        self.vars["rate_hour"].set(fmt_int(t.rate * 60) if t.rate else "—")
+        self._refresh_recent()
         self.vars["eta"].set(fmt_minutes(t.eta_minutes))
         self.vars["gained"].set(fmt_int(t.session_gained))
+
+    def _refresh_recent(self):
+        now = time.time()
+        for w in ROLLING_WINDOWS:
+            got = None if self.paused else self.tracker.gained_in(now, w)
+            if got is None:
+                text = "—"
+            else:
+                gained, span = got
+                text = fmt_int(gained)
+                if span < w - 1:  # window not full yet: say how much it covers
+                    covered = (f"{int(span)}s" if span < 60
+                               else fmt_minutes(span // 60))
+                    text += f" ({covered})"
+            self.vars[f"gain_{w}"].set(text)
 
     def run(self):
         self.root.mainloop()
