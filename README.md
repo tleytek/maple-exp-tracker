@@ -7,6 +7,8 @@ screen and shows:
 - EXP gained in the last 1, 5 and 60 minutes (rolling), plus the average EXP per minute
 - estimated time to level
 - EXP gained and levels this session
+- mesos: current amount, mesos picked up in the last 1, 5 and 60 minutes,
+  and mesos gained / spent this session (optional, needs the inventory open)
 
 It only looks at the screen (like a screenshot); it doesn't touch the game.
 
@@ -35,15 +37,20 @@ To build the exe yourself, run **`build.bat`**. It writes
 
 ## Usage
 
-1. Click **Select Region**, then drag a box around the EXP text at the bottom
+1. Click **Select EXP**, then drag a box around the EXP text at the bottom
    of the game, e.g. `EXP. 11,886 [41.01%]`. Include both green brackets
    `[ ]`.
-2. Check the **Watching** preview: it should show the EXP text.
-3. Play. The numbers update every half second.
+2. Check the **EXP** preview: it should show the EXP text.
+3. Optional: open your inventory, click **Select Mesos** and drag a box
+   around the meso amount (the white box at the bottom of the inventory).
+   Keep the inventory open while you play; the **Mesos** preview shows what
+   is being read.
+4. Play. The numbers update every half second.
 
 | Control | Action |
 |---|---|
-| Select Region | Pick where the EXP text is |
+| Select EXP | Pick where the EXP text is |
+| Select Mesos | Pick where the inventory's meso amount is |
 | Reset | Start a new session |
 | Pause | Stop reading the screen |
 | Always on top | Keep the window above the game |
@@ -54,8 +61,11 @@ Tips:
 
 - Hovering the mouse over the EXP bar shows a tooltip that covers the text;
   reading pauses until it's gone.
-- If you change resolution or move the game window, use **Select Region**
-  again.
+- If you change resolution or move the game window, use **Select EXP**
+  again. If you move the inventory, use **Select Mesos** again.
+- **Mesos gained** only counts increases, so buying potions doesn't lower
+  your meso rate; spending is shown separately. Selling to an NPC counts as
+  gained.
 - **EXP / 1 min**, **5 min** and **60 min** are the EXP you actually gained in
   that much time up to now, so they drop as soon as you slow down. Until a
   window has filled, the time it covers so far is shown in brackets, e.g.
@@ -73,10 +83,15 @@ characters, and recognises each digit by its shape (holes and stroke
 positions). Results that don't look like `1,234 [12.34%]` are discarded rather
 than shown wrong.
 
+The meso amount uses a different font (black on white); `mesoocr.py`
+reads it the same way, anchored on the white meso box.
+
 Run the tests with:
 
 ```
 .venv\Scripts\python.exe test_expocr.py
+.venv\Scripts\python.exe test_mesoocr.py
+.venv\Scripts\python.exe test_tracker.py
 ```
 
 Real captures named `<exp>_<percent>[_note].png` in `tests/` are checked too.

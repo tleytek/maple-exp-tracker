@@ -21,6 +21,7 @@ import numpy as np
 from PIL import Image, ImageTk
 
 import expocr
+import mesoocr
 
 try:
     import keyboard  # global hotkeys; optional
@@ -33,6 +34,7 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "MapleExpTracker")
 REGION_FILE = os.path.join(DATA_DIR, "region.json")
 LEGACY_REGION_FILE = os.path.join(APP_DIR, "region.json")  # pre-exe location
+MESO_REGION_FILE = os.path.join(DATA_DIR, "meso_region.json")
 
 POLL_RATE = 0.5  # seconds between screen reads
 CONFIRM_READS = 3  # matching reads needed to accept a level-up
@@ -56,8 +58,9 @@ def region_is_valid(region):
     )
 
 
-def load_region():
-    for path in (REGION_FILE, LEGACY_REGION_FILE):
+def load_region(kind="exp"):
+    paths = (REGION_FILE, LEGACY_REGION_FILE) if kind == "exp" else (MESO_REGION_FILE,)
+    for path in paths:
         try:
             with open(path, "r") as f:
                 region = json.load(f)
@@ -68,9 +71,9 @@ def load_region():
     return None
 
 
-def save_region(region):
+def save_region(region, kind="exp"):
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(REGION_FILE, "w") as f:
+    with open(REGION_FILE if kind == "exp" else MESO_REGION_FILE, "w") as f:
         json.dump(region, f)
 
 
@@ -105,6 +108,11 @@ def screen_capturer():
 def extract_number(pil_img):
     """Return (exp, percent, status) read from an image of the EXP text."""
     return expocr.read(np.asarray(pil_img))
+
+
+def extract_mesos(pil_img):
+    """Return (mesos, status) read from an image of the inventory's meso box."""
+    return mesoocr.read(np.asarray(pil_img))
 
 
 # --------------------------------------------------------------------------- #
@@ -366,7 +374,7 @@ class MesoTracker(RollingGains):
 # --------------------------------------------------------------------------- #
 # Region selector (drag a box over a frozen screenshot)
 # --------------------------------------------------------------------------- #
-def select_region(master, on_done):
+def select_region(master, on_done, what="the EXP text"):
     """Open a fullscreen drag-to-select overlay. Calls on_done(region_or_None)."""
     with screen_capturer() as sct:
         virtual = sct.monitors[0]  # bounding box of all monitors
@@ -384,7 +392,7 @@ def select_region(master, on_done):
     canvas.create_image(0, 0, image=photo, anchor="nw")
     hint = canvas.create_text(
         virtual["width"] // 2, 40,
-        text="Drag a box around the EXP text  —  Esc / right-click to cancel",
+        text=f"Drag a box around {what}  —  Esc / right-click to cancel",
         fill="yellow", font=("Consolas", 20, "bold"),
     )
     state = {"start": None, "rect": None, "done": False}
@@ -458,16 +466,20 @@ class App:
         self.root = tk.Tk()
         self.root.title("Maple EXP Tracker")
         self.root.configure(bg=self.BG)
-        self.root.minsize(320, 300)
+        self.root.minsize(360, 300)
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
 
         self.tracker = RateTracker()
+        self.meso = MesoTracker()
         self.region = load_region()
+        self.meso_region = load_region("meso")
         self.paused = False
         self.misses = 0
+        self.meso_misses = 0
         self.running = True
         self.results = queue.Queue()  # from OCR worker / hotkeys -> UI thread
         self.preview_photo = None
+        self.meso_preview_photo = None
 
         self._build_ui()
         self._bind_hotkeys()
@@ -478,7 +490,7 @@ class App:
         self.root.after(1000, self._tick)
 
         if not self.region:
-            self.set_status("No region set — click “Select Region”.")
+            self.set_status("No region set — click “Select EXP”.")
 
     # ---- UI ------------------------------------------------------------- #
     def _build_ui(self):
@@ -505,6 +517,12 @@ class App:
             ("rate_min", "EXP / min (average)"),
             ("eta", "Time to level"),
             ("gained", "Gained (session)"),
+            ("mesos", "Mesos"),
+            ("meso_60", "Mesos / 1 min"),
+            ("meso_300", "Mesos / 5 min"),
+            ("meso_3600", "Mesos / 60 min"),
+            ("meso_gained", "Mesos gained (session)"),
+            ("meso_spent", "Mesos spent (session)"),
             ("session", "Session"),
         ]
         for i, (key, label) in enumerate(rows):
@@ -512,7 +530,7 @@ class App:
                      font=("Segoe UI", 10)).grid(row=i, column=0, sticky="w", pady=1)
             var = tk.StringVar(value="—")
             self.vars[key] = var
-            big = key in ("exp", "gain_60")
+            big = key in ("exp", "gain_60", "mesos", "meso_60")
             tk.Label(stats, textvariable=var, bg=self.BG,
                      fg=self.ACCENT if big else self.FG,
                      font=("Consolas", 14 if big else 12, "bold" if big else "normal"),
@@ -524,15 +542,25 @@ class App:
 
         prev_frame = tk.Frame(self.root, bg=self.BG)
         prev_frame.pack(fill=tk.X, **pad)
-        tk.Label(prev_frame, text="Watching:", bg=self.BG, fg=self.DIM,
+        tk.Label(prev_frame, text="EXP:", bg=self.BG, fg=self.DIM,
                  font=("Segoe UI", 9)).pack(side=tk.LEFT)
         self.preview = tk.Label(prev_frame, bg="black", text="(no region)",
                                 fg=self.DIM, font=("Segoe UI", 9))
         self.preview.pack(side=tk.LEFT, padx=6)
 
+        meso_frame = tk.Frame(self.root, bg=self.BG)
+        meso_frame.pack(fill=tk.X, pady=(4, 0), **pad)
+        tk.Label(meso_frame, text="Mesos:", bg=self.BG, fg=self.DIM,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        self.meso_preview = tk.Label(meso_frame, bg="black", text="(no region)",
+                                     fg=self.DIM, font=("Segoe UI", 9))
+        self.meso_preview.pack(side=tk.LEFT, padx=6)
+
         btns = tk.Frame(self.root, bg=self.BG)
         btns.pack(fill=tk.X, pady=8, **pad)
-        ttk.Button(btns, text="Select Region", command=self.select_region).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Select EXP", command=self.select_region).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Select Mesos", command=self.select_meso_region,
+                   ).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Button(btns, text="Reset", command=self.reset).pack(side=tk.LEFT, padx=4)
         self.pause_btn = ttk.Button(btns, text="Pause", command=self.toggle_pause)
         self.pause_btn.pack(side=tk.LEFT)
@@ -614,6 +642,25 @@ class App:
         # give the window time to disappear before the screenshot is taken
         self.root.after(250, lambda: select_region(self.root, self._region_chosen))
 
+    def select_meso_region(self):
+        self.root.withdraw()
+        self.root.after(250, lambda: select_region(
+            self.root, self._meso_region_chosen,
+            "the meso amount in your inventory (keep the inventory open)"))
+
+    def _meso_region_chosen(self, region):
+        self.root.deiconify()
+        self._apply_on_top()
+        if region:
+            self.meso_region = region
+            save_region(region, "meso")
+            self.meso.reset_session()
+            self.set_status(f"Meso region set: {region['width']}×{region['height']} "
+                            f"at ({region['left']}, {region['top']})")
+            self._refresh()
+        else:
+            self.set_status("Meso region selection cancelled.")
+
     def _region_chosen(self, region):
         self.root.deiconify()
         self._apply_on_top()
@@ -628,6 +675,7 @@ class App:
 
     def reset(self):
         self.tracker.reset_session()
+        self.meso.reset_session()
         self.set_status("Session reset.")
         self._refresh()
 
@@ -663,6 +711,14 @@ class App:
                         img = grab(sct, padded(region, screen))
                         current, percent, how = extract_number(img)
                         self.results.put(("reading", (time.time(), current, percent, how, img)))
+                    except Exception as e:
+                        self.results.put(("error", str(e)))
+                meso_region = self.meso_region
+                if meso_region and not self.paused:
+                    try:
+                        img = grab(sct, padded(meso_region, screen))
+                        mesos, how = extract_mesos(img)
+                        self.results.put(("meso", (time.time(), mesos, how, img)))
                     except Exception as e:
                         self.results.put(("error", str(e)))
                 time.sleep(max(0.05, POLL_RATE - (time.time() - start)))
@@ -704,6 +760,8 @@ class App:
                         self.log(msg)
                     self._show_preview(img)
                     self._refresh()
+                elif kind == "meso":
+                    self._on_meso(*payload)
                 elif kind == "error":
                     self.set_status(f"Error: {payload}")
                     self.log(f"error: {payload}", key="error")
@@ -728,12 +786,43 @@ class App:
         self._refresh_recent()  # keeps decaying even if readings stop
         self.root.after(1000, self._tick)
 
-    def _show_preview(self, img):
+    @staticmethod
+    def _preview_image(img):
         max_w = 300
         scale = min(2.0, max_w / img.width)
         shown = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))))
-        self.preview_photo = ImageTk.PhotoImage(shown)
+        return ImageTk.PhotoImage(shown)
+
+    def _show_preview(self, img):
+        self.preview_photo = self._preview_image(img)
         self.preview.config(image=self.preview_photo, text="")
+
+    def _on_meso(self, now, mesos, how, img):
+        m = self.meso
+        before = m.current
+        msg = m.feed(now, mesos)
+        if mesos is None:
+            self.meso_misses += 1
+            self.log(f"can't read mesos: {how}", key="meso:" + how)
+            if self.meso_misses == 6:  # ~3s of failed reads
+                self.set_status(f"Can't read mesos — {how}. Keep the inventory "
+                                "open, or use Select Mesos to fix.")
+        else:
+            if self.meso_misses >= 6:
+                self.set_status("Reading mesos.")
+            self.meso_misses = 0
+            if m.current != before and before is not None and m.current > before:
+                got = m.gained_in(now, 60)
+                self.log(f"mesos {m.current:,} (+{m.current - before:,})"
+                         + (f"  1m +{got[0]:,}" if got else ""))
+            elif m.current != before and before is None:
+                self.log(f"mesos {m.current:,}")
+        if msg:
+            self.set_status(msg)
+            self.log(msg)
+        self.meso_preview_photo = self._preview_image(img)
+        self.meso_preview.config(image=self.meso_preview_photo, text="")
+        self._refresh()
 
     def _refresh(self):
         t = self.tracker
@@ -744,21 +833,28 @@ class App:
         self._refresh_recent()
         self.vars["eta"].set(fmt_minutes(t.eta_minutes))
         self.vars["gained"].set(fmt_int(t.session_gained))
+        m = self.meso
+        self.vars["mesos"].set(fmt_int(m.current))
+        self.vars["meso_gained"].set(fmt_int(m.session_gained) if m.current is not None else "—")
+        self.vars["meso_spent"].set(fmt_int(m.spent) if m.current is not None else "—")
 
     def _refresh_recent(self):
         now = time.time()
-        for w in ROLLING_WINDOWS:
-            got = None if self.paused else self.tracker.gained_in(now, w)
-            if got is None:
-                text = "—"
-            else:
-                gained, span = got
-                text = fmt_int(gained)
-                if span < w - 1:  # window not full yet: say how much it covers
-                    covered = (f"{int(span)}s" if span < 60
-                               else fmt_minutes(span // 60))
-                    text += f" ({covered})"
-            self.vars[f"gain_{w}"].set(text)
+        for prefix, tracker in (("gain", self.tracker), ("meso", self.meso)):
+            for w in ROLLING_WINDOWS:
+                self.vars[f"{prefix}_{w}"].set(self._recent_text(tracker, now, w))
+
+    def _recent_text(self, tracker, now, w):
+        got = None if self.paused else tracker.gained_in(now, w)
+        if got is None:
+            return "—"
+        gained, span = got
+        text = fmt_int(gained)
+        if span < w - 1:  # window not full yet: say how much it covers
+            covered = (f"{int(span)}s" if span < 60
+                       else fmt_minutes(span // 60))
+            text += f" ({covered})"
+        return text
 
     def run(self):
         self.root.mainloop()
