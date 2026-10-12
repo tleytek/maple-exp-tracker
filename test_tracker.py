@@ -1,7 +1,7 @@
 """Tests for RateTracker. Run: .venv\\Scripts\\python.exe test_tracker.py"""
 import sys
 
-from main import RateTracker
+from main import MesoTracker, RateTracker
 
 MAX = 28980  # level 22 EXP requirement seen in game
 
@@ -162,6 +162,37 @@ def main():
         t.feed(i * 5, exp, pct(exp))
     g60, s60 = t.gained_in(120, 3600)
     fails += check("partial 60-min window", g60 == 240 and s60 == 120, (g60, s60))
+
+    # --- MesoTracker ---------------------------------------------------- #
+    # 13. Pickups count as gained; a single misread frame is ignored.
+    m = MesoTracker()
+    m.feed(0, 69776); m.feed(0.5, 69776)
+    fails += check("meso start read", m.current == 69776 and m.session_gained == 0, m.current)
+    m.feed(1, 69376)  # one-frame misread (7 -> 3)
+    m.feed(1.5, 69776)
+    fails += check("one-frame meso misread ignored",
+                   m.current == 69776 and m.spent == 0, (m.current, m.spent))
+    m.feed(2, 70000); m.feed(2.5, 70000)
+    fails += check("pickup counted", m.session_gained == 224 and m.net == 224,
+                   (m.session_gained, m.net))
+    # 14. Unreadable frames (inventory covered) don't break confirmation.
+    m.feed(3, 70100); m.feed(3.5, None); m.feed(4, 70100)
+    fails += check("None between reads ok", m.current == 70100, m.current)
+    # 15. Spending is tracked separately and doesn't reduce what was earned.
+    msg = (m.feed(5, 60100), m.feed(5.5, 60100))[1]
+    fails += check("spend tracked", m.spent == 10000 and m.session_gained == 324
+                   and m.net == 60100 - 69776, (m.spent, m.session_gained, m.net))
+    fails += check("spend message", msg == "Spent 10,000 mesos", msg)
+    # 16. Rolling totals over pickups only.
+    m = MesoTracker()
+    mesos = 1000
+    for i in range(0, 600, 5):  # 10 min, +50 every 5s (two reads each)
+        m.feed(i, mesos); m.feed(i + 0.5, mesos); mesos += 50
+    g1, s1 = m.gained_in(600, 60)
+    g5, s5 = m.gained_in(600, 300)
+    fails += check("meso 1 min total ~600", abs(g1 - 600) <= 50 and s1 == 60, (g1, s1))
+    fails += check("meso 5 min total ~3000", abs(g5 - 3000) <= 50 and s5 == 300, (g5, s5))
+    fails += check("meso rate ~600/min", abs(m.rolling_rate(600) - 600) < 20, m.rolling_rate(600))
 
     print("ALL PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0

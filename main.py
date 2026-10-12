@@ -37,6 +37,7 @@ LEGACY_REGION_FILE = os.path.join(APP_DIR, "region.json")  # pre-exe location
 POLL_RATE = 0.5  # seconds between screen reads
 CONFIRM_READS = 3  # matching reads needed to accept a level-up
 ADOPT_READS = 20  # matching reads (~10s) needed to replace a wrong level-max estimate
+MESO_CONFIRM_READS = 2  # identical reads needed to accept a new meso amount
 ROLLING_WINDOWS = (60, 300, 3600)  # seconds: rolling "EXP gained in the last …"
 ROLLING_WINDOW = 300  # window whose pace drives the time-to-level estimate
 ROLLING_MIN_SPAN = 30  # don't estimate a pace from less history than this
@@ -109,7 +110,48 @@ def extract_number(pil_img):
 # --------------------------------------------------------------------------- #
 # Rate logic (no UI, so it can be tested on its own)
 # --------------------------------------------------------------------------- #
-class RateTracker:
+class RollingGains:
+    """Rolling 'gained in the last N seconds' totals.
+
+    Subclasses keep 'session_gained' (a running total that only goes up) and
+    append (time, session_gained) to 'gain_log' whenever it changes.
+    """
+
+    def _prune_gain_log(self, now):
+        # keep one sample at/before the longest window's start: it's the
+        # total at that moment
+        oldest = now - max(ROLLING_WINDOWS)
+        while len(self.gain_log) >= 2 and self.gain_log[1][0] <= oldest:
+            self.gain_log.popleft()
+
+    def gained_in(self, now, window):
+        """Amount gained in the last 'window' seconds up to 'now'.
+
+        Returns (gained, span): span is less than 'window' while there isn't
+        that much history yet. None when nothing has been read. Measured up to
+        'now', so it keeps falling while nothing is being gained.
+        """
+        self._prune_gain_log(now)
+        if not self.gain_log:
+            return None
+        start = now - window
+        base_t, base_g = self.gain_log[0]
+        for t, g in reversed(self.gain_log):
+            if t <= start:  # total at the window start
+                base_t, base_g = start, g
+                break
+        return max(0, self.session_gained - base_g), min(now - base_t, window)
+
+    def rolling_rate(self, now, window=ROLLING_WINDOW):
+        """Amount per minute over the last 'window' seconds, up to 'now'."""
+        got = self.gained_in(now, window)
+        if got is None or got[1] < ROLLING_MIN_SPAN:
+            return None
+        gained, span = got
+        return gained / (span / 60)
+
+
+class RateTracker(RollingGains):
     def __init__(self):
         self.reset_session()
 
@@ -138,39 +180,6 @@ class RateTracker:
         self.change_log.clear()
         self.gain_log.clear()
         self.rate = None
-
-    def _prune_gain_log(self, now):
-        # keep one sample at/before the longest window's start: it's the EXP
-        # total at that moment
-        oldest = now - max(ROLLING_WINDOWS)
-        while len(self.gain_log) >= 2 and self.gain_log[1][0] <= oldest:
-            self.gain_log.popleft()
-
-    def gained_in(self, now, window):
-        """EXP gained in the last 'window' seconds up to 'now'.
-
-        Returns (gained, span): span is less than 'window' while there isn't
-        that much history yet. None when nothing has been read. Measured up to
-        'now', so it keeps falling while nothing is being gained.
-        """
-        self._prune_gain_log(now)
-        if not self.gain_log:
-            return None
-        start = now - window
-        base_t, base_g = self.gain_log[0]
-        for t, g in reversed(self.gain_log):
-            if t <= start:  # EXP total at the window start
-                base_t, base_g = start, g
-                break
-        return max(0, self.session_gained - base_g), min(now - base_t, window)
-
-    def rolling_rate(self, now, window=ROLLING_WINDOW):
-        """EXP per minute over the last 'window' seconds, up to 'now'."""
-        got = self.gained_in(now, window)
-        if got is None or got[1] < ROLLING_MIN_SPAN:
-            return None
-        gained, span = got
-        return gained / (span / 60)
 
     def _calculate_rate(self):
         if len(self.change_log) < 2:
@@ -295,6 +304,63 @@ class RateTracker:
         if mx and rate:
             return (mx - self.current) / rate
         return None
+
+
+class MesoTracker(RollingGains):
+    """Mesos picked up / spent this session, from the inventory's meso amount.
+
+    There's no second number to cross-check a reading against (as EXP has
+    its %), so a new amount is only accepted after MESO_CONFIRM_READS
+    identical reads in a row. 'session_gained' counts only increases, so
+    buying potions doesn't eat into the earning rate; spending is tracked
+    separately.
+    """
+
+    def __init__(self):
+        self.reset_session()
+
+    def reset_session(self):
+        self.current = None
+        self.start = None  # first amount read this session
+        self.session_gained = 0
+        self.spent = 0
+        self.gain_log = deque()
+        self.pending = None
+        self.pending_count = 0
+        self.session_start = time.time()
+        self.last_seen = None
+
+    @property
+    def net(self):
+        return None if self.current is None else self.current - self.start
+
+    def feed(self, now, mesos):
+        """Process one reading (None = unreadable). Returns a log message or None."""
+        self.last_seen = now
+        if mesos is None:
+            return None  # an unreadable frame neither confirms nor breaks a run
+        if mesos == self.current:
+            self.pending, self.pending_count = None, 0
+            return None
+        if mesos == self.pending:
+            self.pending_count += 1
+        else:
+            self.pending, self.pending_count = mesos, 1
+        if self.pending_count < MESO_CONFIRM_READS:
+            return None
+        self.pending, self.pending_count = None, 0
+        msg = None
+        if self.current is None:
+            self.start = mesos
+        elif mesos > self.current:
+            self.session_gained += mesos - self.current
+        else:
+            self.spent += self.current - mesos
+            msg = f"Spent {self.current - mesos:,} mesos"
+        self.current = mesos
+        self.gain_log.append((now, self.session_gained))
+        self._prune_gain_log(now)
+        return msg
 
 
 # --------------------------------------------------------------------------- #
