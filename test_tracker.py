@@ -215,6 +215,18 @@ def main():
     p.feed(3, None); p.feed(3.5, None)
     fails += check("None isn't 0 potions", p.current == 250 and p.session_gained == 1,
                    (p.current, p.session_gained))
+    # 20b. A big drop at once (a tooltip hiding a stack) needs ~10s to confirm.
+    p = PotionTracker("HP")
+    p.feed(0, 200); p.feed(0.5, 200)
+    now = 1.0
+    for _ in range(10):  # 5s of a stack hidden by a tooltip
+        p.feed(now, 100); now += 0.5
+    fails += check("hidden stack not counted as used", p.session_gained == 0, p.session_gained)
+    p.feed(now, 200); now += 0.5
+    for _ in range(25):  # inventory reopened after a while: really used 40
+        p.feed(now, 160); now += 0.5
+    fails += check("real big drop accepted after confirming", p.session_gained == 40,
+                   p.session_gained)
     # 21. Net mesos = pickups minus potion cost, for the session and windows.
     m, hp, mp = MesoTracker(), PotionTracker("HP"), PotionTracker("MP")
     mesos, hpc, mpc = 1000, 200, 200

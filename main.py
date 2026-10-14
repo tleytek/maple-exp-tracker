@@ -22,6 +22,7 @@ from PIL import Image, ImageTk
 
 import expocr
 import mesoocr
+import potionocr
 
 try:
     import keyboard  # global hotkeys; optional
@@ -35,11 +36,19 @@ DATA_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "M
 REGION_FILE = os.path.join(DATA_DIR, "region.json")
 LEGACY_REGION_FILE = os.path.join(APP_DIR, "region.json")  # pre-exe location
 MESO_REGION_FILE = os.path.join(DATA_DIR, "meso_region.json")
+REGION_FILES = {
+    "meso": MESO_REGION_FILE,
+    "hp": os.path.join(DATA_DIR, "hp_region.json"),
+    "mp": os.path.join(DATA_DIR, "mp_region.json"),
+}
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 
 POLL_RATE = 0.5  # seconds between screen reads
 CONFIRM_READS = 3  # matching reads needed to accept a level-up
 ADOPT_READS = 20  # matching reads (~10s) needed to replace a wrong level-max estimate
 MESO_CONFIRM_READS = 2  # identical reads needed to accept a new meso amount
+POTION_BIG_DROP = 10  # potions; a bigger drop at once may be a covered stack
+POTION_BIG_DROP_READS = 20  # (~10s) identical reads needed to accept a big drop
 ROLLING_WINDOWS = (60, 300, 3600)  # seconds: rolling "EXP gained in the last …"
 ROLLING_WINDOW = 300  # window whose pace drives the time-to-level estimate
 ROLLING_MIN_SPAN = 30  # don't estimate a pace from less history than this
@@ -59,7 +68,7 @@ def region_is_valid(region):
 
 
 def load_region(kind="exp"):
-    paths = (REGION_FILE, LEGACY_REGION_FILE) if kind == "exp" else (MESO_REGION_FILE,)
+    paths = (REGION_FILE, LEGACY_REGION_FILE) if kind == "exp" else (REGION_FILES[kind],)
     for path in paths:
         try:
             with open(path, "r") as f:
@@ -73,8 +82,54 @@ def load_region(kind="exp"):
 
 def save_region(region, kind="exp"):
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(REGION_FILE if kind == "exp" else MESO_REGION_FILE, "w") as f:
+    with open(REGION_FILE if kind == "exp" else REGION_FILES[kind], "w") as f:
         json.dump(region, f)
+
+
+DEFAULT_SETTINGS = {"hp_price": 0, "mp_price": 0}  # mesos per potion
+
+
+def load_settings():
+    settings = dict(DEFAULT_SETTINGS)
+    try:
+        with open(SETTINGS_FILE, "r") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return settings
+    if isinstance(saved, dict):
+        for key in settings:
+            if isinstance(saved.get(key), (int, float)) and saved[key] >= 0:
+                settings[key] = saved[key]
+    return settings
+
+
+def save_settings(settings):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f)
+
+
+DEFAULT_SETTINGS = {"hp_price": 0, "mp_price": 0}  # mesos per potion
+
+
+def load_settings():
+    settings = dict(DEFAULT_SETTINGS)
+    try:
+        with open(SETTINGS_FILE, "r") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return settings
+    if isinstance(saved, dict):
+        for key in settings:
+            if isinstance(saved.get(key), (int, float)) and saved[key] >= 0:
+                settings[key] = saved[key]
+    return settings
+
+
+def save_settings(settings):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f)
 
 
 # --------------------------------------------------------------------------- #
@@ -113,6 +168,11 @@ def extract_number(pil_img):
 def extract_mesos(pil_img):
     """Return (mesos, status) read from an image of the inventory's meso box."""
     return mesoocr.read(np.asarray(pil_img))
+
+
+def extract_potions(pil_img):
+    """Return (total, status) read from an image of potion slots."""
+    return potionocr.read(np.asarray(pil_img))
 
 
 # --------------------------------------------------------------------------- #
@@ -332,8 +392,8 @@ class ConfirmedAmount(RollingGains):
         self.session_start = time.time()
         self.last_seen = None
 
-    def _confirmed(self, now, value):
-        """True when 'value' is a new amount seen MESO_CONFIRM_READS times."""
+    def _confirmed(self, now, value, needed=MESO_CONFIRM_READS):
+        """True when 'value' is a new amount seen 'needed' times in a row."""
         self.last_seen = now
         if value is None:
             return False  # an unreadable frame neither confirms nor breaks a run
@@ -344,7 +404,7 @@ class ConfirmedAmount(RollingGains):
             self.pending_count += 1
         else:
             self.pending, self.pending_count = value, 1
-        if self.pending_count < MESO_CONFIRM_READS:
+        if self.pending_count < needed:
             return False
         self.pending, self.pending_count = None, 0
         return True
@@ -390,6 +450,11 @@ class PotionTracker(ConfirmedAmount):
     'session_gained' is potions *used* (count went down), so the rolling
     windows give potions used in the last 1/5/60 minutes. Increases (buying
     or looting potions) are counted in 'restocked' and never offset usage.
+
+    A tooltip or the cursor can hide a whole stack, which reads like dozens
+    of potions used at once, so a drop of more than POTION_BIG_DROP needs
+    POTION_BIG_DROP_READS identical reads (a real one, e.g. after the
+    inventory was closed for a while, is just accepted a few seconds late).
     """
 
     def __init__(self, name):
@@ -402,7 +467,9 @@ class PotionTracker(ConfirmedAmount):
 
     def feed(self, now, count):
         """Process one reading (None = unreadable). Returns a log message or None."""
-        if not self._confirmed(now, count):
+        big = (count is not None and self.current is not None
+               and self.current - count > POTION_BIG_DROP)
+        if not self._confirmed(now, count, POTION_BIG_DROP_READS if big else MESO_CONFIRM_READS):
             return None
         msg = None
         if self.current is None:
@@ -539,8 +606,13 @@ class App:
 
         self.tracker = RateTracker()
         self.meso = MesoTracker()
+        self.potions = {"hp": PotionTracker("HP"), "mp": PotionTracker("MP")}
         self.region = load_region()
         self.meso_region = load_region("meso")
+        self.potion_regions = {k: load_region(k) for k in self.potions}
+        self.settings = load_settings()
+        self.potion_misses = {k: 0 for k in self.potions}
+        self.potion_preview_photos = {}
         self.paused = False
         self.misses = 0
         self.meso_misses = 0
@@ -591,6 +663,12 @@ class App:
             ("meso_3600", "Mesos / 60 min"),
             ("meso_gained", "Mesos gained (session)"),
             ("meso_spent", "Mesos spent (session)"),
+            ("pots_used", "HP / MP pots used"),
+            ("pot_cost", "Potion cost (session)"),
+            ("net_60", "Net mesos / 1 min"),
+            ("net_300", "Net mesos / 5 min"),
+            ("net_3600", "Net mesos / 60 min"),
+            ("net_session", "Net mesos (session)"),
             ("session", "Session"),
         ]
         for i, (key, label) in enumerate(rows):
@@ -598,7 +676,7 @@ class App:
                      font=("Segoe UI", 10)).grid(row=i, column=0, sticky="w", pady=1)
             var = tk.StringVar(value="—")
             self.vars[key] = var
-            big = key in ("exp", "gain_60", "mesos", "meso_60")
+            big = key in ("exp", "gain_60", "mesos", "meso_60", "net_60")
             tk.Label(stats, textvariable=var, bg=self.BG,
                      fg=self.ACCENT if big else self.FG,
                      font=("Consolas", 14 if big else 12, "bold" if big else "normal"),
@@ -624,6 +702,16 @@ class App:
                                      fg=self.DIM, font=("Segoe UI", 9))
         self.meso_preview.pack(side=tk.LEFT, padx=6)
 
+        pot_frame = tk.Frame(self.root, bg=self.BG)
+        pot_frame.pack(fill=tk.X, pady=(4, 0), **pad)
+        self.potion_previews = {}
+        for kind in self.potions:
+            tk.Label(pot_frame, text=f"{kind.upper()} pots:", bg=self.BG, fg=self.DIM,
+                     font=("Segoe UI", 9)).pack(side=tk.LEFT)
+            self.potion_previews[kind] = tk.Label(pot_frame, bg="black", text="(no region)",
+                                                  fg=self.DIM, font=("Segoe UI", 9))
+            self.potion_previews[kind].pack(side=tk.LEFT, padx=(6, 12))
+
         btns = tk.Frame(self.root, bg=self.BG)
         btns.pack(fill=tk.X, pady=8, **pad)
         ttk.Button(btns, text="Select EXP", command=self.select_region).pack(side=tk.LEFT)
@@ -632,6 +720,23 @@ class App:
         ttk.Button(btns, text="Reset", command=self.reset).pack(side=tk.LEFT, padx=4)
         self.pause_btn = ttk.Button(btns, text="Pause", command=self.toggle_pause)
         self.pause_btn.pack(side=tk.LEFT)
+
+        pot_btns = tk.Frame(self.root, bg=self.BG)
+        pot_btns.pack(fill=tk.X, pady=(0, 8), **pad)
+        self.price_vars = {}
+        for kind in self.potions:
+            ttk.Button(pot_btns, text=f"Select {kind.upper()} pots",
+                       command=lambda k=kind: self.select_potion_region(k),
+                       ).pack(side=tk.LEFT, padx=(0, 4))
+        for kind in self.potions:
+            tk.Label(pot_btns, text=f"{kind.upper()} pot price", bg=self.BG, fg=self.DIM,
+                     font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(8, 2))
+            var = tk.StringVar(value=f"{self.settings[kind + '_price']:g}")
+            var.trace_add("write", lambda *_, k=kind: self._price_changed(k))
+            self.price_vars[kind] = var
+            tk.Entry(pot_btns, textvariable=var, width=6, bg="#2a2d34", fg=self.FG,
+                     insertbackground=self.FG, relief="flat",
+                     font=("Consolas", 10)).pack(side=tk.LEFT)
 
         opts = tk.Frame(self.root, bg=self.BG)
         opts.pack(fill=tk.X, **pad)
@@ -716,6 +821,40 @@ class App:
             self.root, self._meso_region_chosen,
             "the meso amount in your inventory (keep the inventory open)"))
 
+    def select_potion_region(self, kind):
+        self.root.withdraw()
+        self.root.after(250, lambda: select_region(
+            self.root, lambda region: self._potion_region_chosen(kind, region),
+            f"your {kind.upper()} potion slots (only potions; inventory open on the Use tab)"))
+
+    def _potion_region_chosen(self, kind, region):
+        self.root.deiconify()
+        self._apply_on_top()
+        if region:
+            self.potion_regions[kind] = region
+            save_region(region, kind)
+            self.potions[kind].reset_session()
+            self.set_status(f"{kind.upper()} potion region set: {region['width']}×"
+                            f"{region['height']} at ({region['left']}, {region['top']})")
+            self._refresh()
+        else:
+            self.set_status(f"{kind.upper()} potion region selection cancelled.")
+
+    def _price_changed(self, kind):
+        text = self.price_vars[kind].get().strip().replace(",", "")
+        try:
+            price = float(text) if text else 0
+        except ValueError:
+            return  # keep the last valid price while typing
+        if price < 0:
+            return
+        self.settings[kind + "_price"] = price
+        try:
+            save_settings(self.settings)
+        except OSError as e:
+            self.set_status(f"Couldn't save prices: {e}")
+        self._refresh()
+
     def _meso_region_chosen(self, region):
         self.root.deiconify()
         self._apply_on_top()
@@ -744,6 +883,8 @@ class App:
     def reset(self):
         self.tracker.reset_session()
         self.meso.reset_session()
+        for p in self.potions.values():
+            p.reset_session()
         self.set_status("Session reset.")
         self._refresh()
 
@@ -789,6 +930,15 @@ class App:
                         self.results.put(("meso", (time.time(), mesos, how, img)))
                     except Exception as e:
                         self.results.put(("error", str(e)))
+                for kind, pot_region in list(self.potion_regions.items()):
+                    if pot_region and not self.paused:
+                        try:
+                            # exact region: padding would pull in neighbouring slots
+                            img = grab(sct, pot_region)
+                            total, how = extract_potions(img)
+                            self.results.put(("potion", (kind, time.time(), total, how, img)))
+                        except Exception as e:
+                            self.results.put(("error", str(e)))
                 time.sleep(max(0.05, POLL_RATE - (time.time() - start)))
 
     def _poll(self):
@@ -830,6 +980,8 @@ class App:
                     self._refresh()
                 elif kind == "meso":
                     self._on_meso(*payload)
+                elif kind == "potion":
+                    self._on_potion(*payload)
                 elif kind == "error":
                     self.set_status(f"Error: {payload}")
                     self.log(f"error: {payload}", key="error")
@@ -855,8 +1007,7 @@ class App:
         self.root.after(1000, self._tick)
 
     @staticmethod
-    def _preview_image(img):
-        max_w = 300
+    def _preview_image(img, max_w=300):
         scale = min(2.0, max_w / img.width)
         shown = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))))
         return ImageTk.PhotoImage(shown)
@@ -892,6 +1043,40 @@ class App:
         self.meso_preview.config(image=self.meso_preview_photo, text="")
         self._refresh()
 
+    def _on_potion(self, kind, now, total, how, img):
+        p = self.potions[kind]
+        name = kind.upper()
+        before = p.current
+        msg = p.feed(now, total)
+        if total is None:
+            self.potion_misses[kind] += 1
+            self.log(f"can't read {name} pots: {how}", key=f"{kind}:{how}")
+            if self.potion_misses[kind] == 6:  # ~3s of failed reads
+                self.set_status(f"Can't read {name} potions — {how}. Keep the inventory "
+                                f"open on the Use tab, or use Select {name} pots to fix.")
+        else:
+            if self.potion_misses[kind] >= 6:
+                self.set_status(f"Reading {name} potions.")
+            self.potion_misses[kind] = 0
+            if before is None and p.current is not None:
+                self.log(f"{name} pots {p.current:,}")
+            elif p.current is not None and p.current < before:
+                self.log(f"{name} pots {p.current:,} (used {before - p.current:,}, "
+                         f"session {p.session_gained:,})")
+            elif p.pending is not None and p.pending_count == 1 and before is not None \
+                    and before - p.pending > POTION_BIG_DROP:
+                self.log(f"{name} pots read {p.pending:,} — waiting to confirm a big drop",
+                         key=f"{kind}:bigdrop")
+        if msg:
+            self.set_status(msg)
+            self.log(msg)
+        self.potion_preview_photos[kind] = self._preview_image(img, max_w=140)
+        self.potion_previews[kind].config(image=self.potion_preview_photos[kind], text="")
+        self._refresh()
+
+    def _potion_cost(self, used_hp, used_mp):
+        return used_hp * self.settings["hp_price"] + used_mp * self.settings["mp_price"]
+
     def _refresh(self):
         t = self.tracker
         self.vars["exp"].set(fmt_int(t.current))
@@ -905,12 +1090,38 @@ class App:
         self.vars["mesos"].set(fmt_int(m.current))
         self.vars["meso_gained"].set(fmt_int(m.session_gained) if m.current is not None else "—")
         self.vars["meso_spent"].set(fmt_int(m.spent) if m.current is not None else "—")
+        hp, mp = self.potions["hp"], self.potions["mp"]
+        if hp.current is None and mp.current is None:
+            self.vars["pots_used"].set("—")
+            self.vars["pot_cost"].set("—")
+        else:
+            self.vars["pots_used"].set(
+                f"{fmt_int(hp.session_gained if hp.current is not None else None)} / "
+                f"{fmt_int(mp.session_gained if mp.current is not None else None)}")
+            self.vars["pot_cost"].set(fmt_int(self._potion_cost(hp.session_gained,
+                                                                mp.session_gained)))
+        self.vars["net_session"].set(fmt_int(net_mesos(
+            m, hp, mp, self.settings["hp_price"], self.settings["mp_price"])))
 
     def _refresh_recent(self):
         now = time.time()
         for prefix, tracker in (("gain", self.tracker), ("meso", self.meso)):
             for w in ROLLING_WINDOWS:
                 self.vars[f"{prefix}_{w}"].set(self._recent_text(tracker, now, w))
+        for w in ROLLING_WINDOWS:
+            self.vars[f"net_{w}"].set(self._net_text(now, w))
+
+    def _net_text(self, now, w):
+        got = None if self.paused else self.meso.gained_in(now, w)
+        if got is None:
+            return "—"
+        net = net_mesos(self.meso, self.potions["hp"], self.potions["mp"],
+                        self.settings["hp_price"], self.settings["mp_price"], now, w)
+        text = f"{int(net):,}"
+        span = got[1]
+        if span < w - 1:
+            text += f" ({int(span)}s)" if span < 60 else f" ({fmt_minutes(span // 60)})"
+        return text
 
     def _recent_text(self, tracker, now, w):
         got = None if self.paused else tracker.gained_in(now, w)
