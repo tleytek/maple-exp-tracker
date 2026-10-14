@@ -1,7 +1,7 @@
 """Tests for RateTracker. Run: .venv\\Scripts\\python.exe test_tracker.py"""
 import sys
 
-from main import MesoTracker, RateTracker
+from main import MesoTracker, PotionTracker, RateTracker, net_mesos
 
 MAX = 28980  # level 22 EXP requirement seen in game
 
@@ -193,6 +193,48 @@ def main():
     fails += check("meso 1 min total ~600", abs(g1 - 600) <= 50 and s1 == 60, (g1, s1))
     fails += check("meso 5 min total ~3000", abs(g5 - 3000) <= 50 and s5 == 300, (g5, s5))
     fails += check("meso rate ~600/min", abs(m.rolling_rate(600) - 600) < 20, m.rolling_rate(600))
+
+    # --- PotionTracker / net mesos ------------------------------------- #
+    # 17. Potions used = drops in the stack total; a one-frame misread is ignored.
+    p = PotionTracker("HP")
+    p.feed(0, 300); p.feed(0.5, 300)
+    fails += check("potion start read", p.current == 300 and p.session_gained == 0, p.current)
+    p.feed(1, 200); p.feed(1.5, 299); p.feed(2, 299)  # misread frame, then 1 used
+    fails += check("potion used counted, misread ignored",
+                   p.current == 299 and p.session_gained == 1, (p.current, p.session_gained))
+    # 18. A stack running out (100 -> 0 slot) is still just a drop of 1.
+    p = PotionTracker("HP")
+    p.feed(0, 101); p.feed(0.5, 101); p.feed(1, 100); p.feed(1.5, 100)
+    fails += check("stack emptying counts 1", p.session_gained == 1, p.session_gained)
+    # 19. Restocking doesn't cancel out what was used.
+    msg = (p.feed(2, 250), p.feed(2.5, 250))[1]
+    fails += check("restock not subtracted from use",
+                   p.session_gained == 1 and p.restocked == 150, (p.session_gained, p.restocked))
+    fails += check("restock message", msg == "HP potions restocked: +150", msg)
+    # 20. Unreadable frames (inventory closed) don't count as using potions.
+    p.feed(3, None); p.feed(3.5, None)
+    fails += check("None isn't 0 potions", p.current == 250 and p.session_gained == 1,
+                   (p.current, p.session_gained))
+    # 21. Net mesos = pickups minus potion cost, for the session and windows.
+    m, hp, mp = MesoTracker(), PotionTracker("HP"), PotionTracker("MP")
+    mesos, hpc, mpc = 1000, 200, 200
+    for i in range(0, 600, 5):  # 10 min: +50 mesos, 1 HP pot every 5s; 1 MP pot every 10s
+        for s in (i, i + 0.5):
+            m.feed(s, mesos); hp.feed(s, hpc); mp.feed(s, mpc)
+        mesos += 50; hpc -= 1; mpc -= (i // 5) % 2
+    used_hp, used_mp = hp.session_gained, mp.session_gained
+    net = net_mesos(m, hp, mp, 15, 25)
+    fails += check("session net mesos",
+                   net == m.session_gained - used_hp * 15 - used_mp * 25,
+                   (m.session_gained, used_hp, used_mp, net))
+    n1 = net_mesos(m, hp, mp, 15, 25, now=600, window=60)
+    fails += check("1 min net ~ 600 - 12*15 - 6*25", n1 is not None and abs(n1 - 270) <= 70, n1)
+    # 22. No potion regions: net = pickups; no meso reads: None.
+    fails += check("net without potion reads",
+                   net_mesos(m, PotionTracker("HP"), PotionTracker("MP"), 15, 25)
+                   == m.session_gained)
+    fails += check("net None without mesos",
+                   net_mesos(MesoTracker(), hp, mp, 15, 25) is None)
 
     print("ALL PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0

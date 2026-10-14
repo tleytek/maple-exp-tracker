@@ -314,15 +314,10 @@ class RateTracker(RollingGains):
         return None
 
 
-class MesoTracker(RollingGains):
-    """Mesos picked up / spent this session, from the inventory's meso amount.
-
-    There's no second number to cross-check a reading against (as EXP has
-    its %), so a new amount is only accepted after MESO_CONFIRM_READS
-    identical reads in a row. 'session_gained' counts only increases, so
-    buying potions doesn't eat into the earning rate; spending is tracked
-    separately.
-    """
+class ConfirmedAmount(RollingGains):
+    """A single on-screen amount with no second number to cross-check it
+    against (as EXP has its %), so a new value is only accepted after
+    MESO_CONFIRM_READS identical reads in a row."""
 
     def __init__(self):
         self.reset_session()
@@ -331,12 +326,40 @@ class MesoTracker(RollingGains):
         self.current = None
         self.start = None  # first amount read this session
         self.session_gained = 0
-        self.spent = 0
         self.gain_log = deque()
         self.pending = None
         self.pending_count = 0
         self.session_start = time.time()
         self.last_seen = None
+
+    def _confirmed(self, now, value):
+        """True when 'value' is a new amount seen MESO_CONFIRM_READS times."""
+        self.last_seen = now
+        if value is None:
+            return False  # an unreadable frame neither confirms nor breaks a run
+        if value == self.current:
+            self.pending, self.pending_count = None, 0
+            return False
+        if value == self.pending:
+            self.pending_count += 1
+        else:
+            self.pending, self.pending_count = value, 1
+        if self.pending_count < MESO_CONFIRM_READS:
+            return False
+        self.pending, self.pending_count = None, 0
+        return True
+
+
+class MesoTracker(ConfirmedAmount):
+    """Mesos picked up / spent this session, from the inventory's meso amount.
+
+    'session_gained' counts only increases, so buying potions doesn't eat
+    into the earning rate; spending is tracked separately.
+    """
+
+    def reset_session(self):
+        super().reset_session()
+        self.spent = 0
 
     @property
     def net(self):
@@ -344,19 +367,8 @@ class MesoTracker(RollingGains):
 
     def feed(self, now, mesos):
         """Process one reading (None = unreadable). Returns a log message or None."""
-        self.last_seen = now
-        if mesos is None:
-            return None  # an unreadable frame neither confirms nor breaks a run
-        if mesos == self.current:
-            self.pending, self.pending_count = None, 0
+        if not self._confirmed(now, mesos):
             return None
-        if mesos == self.pending:
-            self.pending_count += 1
-        else:
-            self.pending, self.pending_count = mesos, 1
-        if self.pending_count < MESO_CONFIRM_READS:
-            return None
-        self.pending, self.pending_count = None, 0
         msg = None
         if self.current is None:
             self.start = mesos
@@ -369,6 +381,62 @@ class MesoTracker(RollingGains):
         self.gain_log.append((now, self.session_gained))
         self._prune_gain_log(now)
         return msg
+
+
+class PotionTracker(ConfirmedAmount):
+    """Potions used this session, from the total count of the watched
+    potion stacks in the inventory.
+
+    'session_gained' is potions *used* (count went down), so the rolling
+    windows give potions used in the last 1/5/60 minutes. Increases (buying
+    or looting potions) are counted in 'restocked' and never offset usage.
+    """
+
+    def __init__(self, name):
+        self.name = name  # "HP" / "MP", for log messages
+        super().__init__()
+
+    def reset_session(self):
+        super().reset_session()
+        self.restocked = 0
+
+    def feed(self, now, count):
+        """Process one reading (None = unreadable). Returns a log message or None."""
+        if not self._confirmed(now, count):
+            return None
+        msg = None
+        if self.current is None:
+            self.start = count
+        elif count < self.current:
+            self.session_gained += self.current - count
+        else:
+            self.restocked += count - self.current
+            msg = f"{self.name} potions restocked: +{count - self.current:,}"
+        self.current = count
+        self.gain_log.append((now, self.session_gained))
+        self._prune_gain_log(now)
+        return msg
+
+
+def net_mesos(meso, hp, mp, hp_price, mp_price, now=None, window=None):
+    """Mesos picked up minus the cost of potions used.
+
+    For the whole session when 'window' is None, else for the last 'window'
+    seconds up to 'now'. Returns None until mesos have been read; a potion
+    tracker with nothing read yet costs 0 (that region may be unused).
+    """
+    def amount(tracker):
+        if window is None:
+            return tracker.session_gained if tracker.current is not None else None
+        got = tracker.gained_in(now, window)
+        return None if got is None else got[0]
+
+    picked_up = amount(meso)
+    if picked_up is None:
+        return None
+    hp_used = amount(hp) or 0
+    mp_used = amount(mp) or 0
+    return picked_up - hp_used * hp_price - mp_used * mp_price
 
 
 # --------------------------------------------------------------------------- #
