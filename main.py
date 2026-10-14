@@ -109,29 +109,6 @@ def save_settings(settings):
         json.dump(settings, f)
 
 
-DEFAULT_SETTINGS = {"hp_price": 0, "mp_price": 0}  # mesos per potion
-
-
-def load_settings():
-    settings = dict(DEFAULT_SETTINGS)
-    try:
-        with open(SETTINGS_FILE, "r") as f:
-            saved = json.load(f)
-    except (OSError, ValueError):
-        return settings
-    if isinstance(saved, dict):
-        for key in settings:
-            if isinstance(saved.get(key), (int, float)) and saved[key] >= 0:
-                settings[key] = saved[key]
-    return settings
-
-
-def save_settings(settings):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(settings, f)
-
-
 # --------------------------------------------------------------------------- #
 # OCR
 # --------------------------------------------------------------------------- #
