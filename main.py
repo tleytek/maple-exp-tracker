@@ -86,7 +86,11 @@ def save_region(region, kind="exp"):
         json.dump(region, f)
 
 
-DEFAULT_SETTINGS = {"hp_price": 0, "mp_price": 0}  # mesos per potion
+DEFAULT_SETTINGS = {
+    "hp_price": 0,  # mesos per potion
+    "mp_price": 0,
+    "hidden_rows": [],  # stat rows the user unticked in the Rows menu
+}
 
 
 def load_settings():
@@ -97,9 +101,12 @@ def load_settings():
     except (OSError, ValueError):
         return settings
     if isinstance(saved, dict):
-        for key in settings:
+        for key in ("hp_price", "mp_price"):
             if isinstance(saved.get(key), (int, float)) and saved[key] >= 0:
                 settings[key] = saved[key]
+        hidden = saved.get("hidden_rows")
+        if isinstance(hidden, list):
+            settings["hidden_rows"] = [k for k in hidden if isinstance(k, str)]
     return settings
 
 
@@ -634,30 +641,45 @@ class App:
             ("rate_min", "EXP / min (average)"),
             ("eta", "Time to level"),
             ("gained", "Gained (session)"),
+            None,
             ("mesos", "Mesos"),
             ("meso_60", "Mesos / 1 min"),
             ("meso_300", "Mesos / 5 min"),
             ("meso_3600", "Mesos / 60 min"),
             ("meso_gained", "Mesos gained (session)"),
             ("meso_spent", "Mesos spent (session)"),
+            None,
             ("pots_used", "HP / MP pots used"),
             ("pot_cost", "Potion cost (session)"),
             ("net_60", "Net mesos / 1 min"),
             ("net_300", "Net mesos / 5 min"),
             ("net_3600", "Net mesos / 60 min"),
             ("net_session", "Net mesos (session)"),
+            None,
             ("session", "Session"),
-        ]
-        for i, (key, label) in enumerate(rows):
-            tk.Label(stats, text=label, bg=self.BG, fg=self.DIM,
-                     font=("Segoe UI", 10)).grid(row=i, column=0, sticky="w", pady=1)
+        ]  # None = section break in the Rows menu
+        self.row_layout = rows
+        self.row_widgets = {}
+        self.row_shown = {}
+        hidden = set(self.settings["hidden_rows"])
+        for i, row in enumerate(rows):
+            if row is None:
+                continue
+            key, label = row
+            name = tk.Label(stats, text=label, bg=self.BG, fg=self.DIM, font=("Segoe UI", 10))
+            name.grid(row=i, column=0, sticky="w", pady=1)
             var = tk.StringVar(value="—")
             self.vars[key] = var
             big = key in ("exp", "gain_60", "mesos", "meso_60", "net_60")
-            tk.Label(stats, textvariable=var, bg=self.BG,
-                     fg=self.ACCENT if big else self.FG,
-                     font=("Consolas", 14 if big else 12, "bold" if big else "normal"),
-                     ).grid(row=i, column=1, sticky="e", pady=1)
+            value = tk.Label(stats, textvariable=var, bg=self.BG,
+                             fg=self.ACCENT if big else self.FG,
+                             font=("Consolas", 14 if big else 12, "bold" if big else "normal"))
+            value.grid(row=i, column=1, sticky="e", pady=1)
+            self.row_widgets[key] = (name, value)
+            self.row_shown[key] = tk.BooleanVar(value=key not in hidden)
+            if key in hidden:
+                name.grid_remove()
+                value.grid_remove()
         stats.columnconfigure(1, weight=1)
 
         self.progress = ttk.Progressbar(self.root, maximum=100, style="Exp.Horizontal.TProgressbar")
@@ -724,6 +746,19 @@ class App:
         self.show_log = tk.BooleanVar(value=False)
         ttk.Checkbutton(opts, text="Show log", variable=self.show_log,
                         command=self._toggle_log).pack(side=tk.LEFT, padx=(12, 0))
+        rows_btn = ttk.Menubutton(opts, text="Rows")
+        rows_menu = tk.Menu(rows_btn, tearoff=0)
+        for row in self.row_layout:
+            if row is None:
+                rows_menu.add_separator()
+                continue
+            key, label = row
+            rows_menu.add_checkbutton(label=label, variable=self.row_shown[key],
+                                      command=lambda k=key: self._toggle_row(k))
+        rows_menu.add_separator()
+        rows_menu.add_command(label="Show all", command=self._show_all_rows)
+        rows_btn["menu"] = rows_menu
+        rows_btn.pack(side=tk.LEFT, padx=(12, 0))
 
         self.status = tk.StringVar(value="Starting…")
         tk.Label(self.root, textvariable=self.status, bg=self.BG, fg=self.DIM,
@@ -744,6 +779,27 @@ class App:
 
         tk.Label(self.root, text="F1 reset · F2 hide/show", bg=self.BG, fg="#555",
                  font=("Segoe UI", 8)).pack(side=tk.BOTTOM, pady=(0, 4))
+
+    def _toggle_row(self, key):
+        name, value = self.row_widgets[key]
+        if self.row_shown[key].get():
+            name.grid()
+            value.grid()
+        else:
+            name.grid_remove()
+            value.grid_remove()
+        self.settings["hidden_rows"] = [k for k, v in self.row_shown.items() if not v.get()]
+        try:
+            save_settings(self.settings)
+        except OSError as e:
+            self.set_status(f"Couldn't save row choices: {e}")
+        self.root.geometry("")  # shrink / grow to fit
+
+    def _show_all_rows(self):
+        for key, shown in self.row_shown.items():
+            if not shown.get():
+                shown.set(True)
+                self._toggle_row(key)
 
     def _toggle_log(self):
         if self.show_log.get():
