@@ -63,7 +63,7 @@ To build the exe yourself, run **`build.bat`**. It writes
 | Reset | Start a new session |
 | Pause | Stop reading the screen |
 | Always on top | Keep the window above the game |
-| Rows | Tick / untick which stats are shown (saved) |
+| Rows | Tick / untick which stats and region images are shown (saved) |
 | Problem snapshots | Open the folder of saved problem images |
 | F1 | Reset the rate |
 | F2 | Hide / show the window |

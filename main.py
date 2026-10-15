@@ -670,7 +670,6 @@ class App:
         self.row_layout = rows
         self.row_widgets = {}
         self.row_shown = {}
-        hidden = set(self.settings["hidden_rows"])
         for i, row in enumerate(rows):
             if row is None:
                 continue
@@ -684,41 +683,37 @@ class App:
                              fg=self.ACCENT if big else self.FG,
                              font=("Consolas", 14 if big else 12, "bold" if big else "normal"))
             value.grid(row=i, column=1, sticky="e", pady=1)
-            self.row_widgets[key] = (name, value)
-            self.row_shown[key] = tk.BooleanVar(value=key not in hidden)
-            if key in hidden:
-                name.grid_remove()
-                value.grid_remove()
+            self._add_hideable(key, (name, value))
         stats.columnconfigure(1, weight=1)
 
         self.progress = ttk.Progressbar(self.root, maximum=100, style="Exp.Horizontal.TProgressbar")
         self.progress.pack(fill=tk.X, pady=(2, 8), **pad)
 
-        prev_frame = tk.Frame(self.root, bg=self.BG)
-        prev_frame.pack(fill=tk.X, **pad)
-        tk.Label(prev_frame, text="EXP:", bg=self.BG, fg=self.DIM,
-                 font=("Segoe UI", 9)).pack(side=tk.LEFT)
-        self.preview = tk.Label(prev_frame, bg="black", text="(no region)",
-                                fg=self.DIM, font=("Segoe UI", 9))
-        self.preview.pack(side=tk.LEFT, padx=6)
+        # Previews of what each region sees, on a grid so each one can be
+        # hidden and shown again in place (Rows menu).
+        previews = tk.Frame(self.root, bg=self.BG)
+        previews.pack(fill=tk.X, **pad)
 
-        meso_frame = tk.Frame(self.root, bg=self.BG)
-        meso_frame.pack(fill=tk.X, pady=(4, 0), **pad)
-        tk.Label(meso_frame, text="Mesos:", bg=self.BG, fg=self.DIM,
-                 font=("Segoe UI", 9)).pack(side=tk.LEFT)
-        self.meso_preview = tk.Label(meso_frame, bg="black", text="(no region)",
-                                     fg=self.DIM, font=("Segoe UI", 9))
-        self.meso_preview.pack(side=tk.LEFT, padx=6)
+        def preview(key, label, row, col, parent=previews):
+            name = tk.Label(parent, text=label, bg=self.BG, fg=self.DIM,
+                            font=("Segoe UI", 9))
+            name.grid(row=row, column=col, sticky="w", pady=(0, 4))
+            img = tk.Label(parent, bg="black", text="(no region)", fg=self.DIM,
+                           font=("Segoe UI", 9))
+            img.grid(row=row, column=col + 1, sticky="w", padx=(6, 12), pady=(0, 4))
+            self._add_hideable(key, (name, img))
+            return img
 
-        pot_frame = tk.Frame(self.root, bg=self.BG)
-        pot_frame.pack(fill=tk.X, pady=(4, 0), **pad)
-        self.potion_previews = {}
-        for kind in self.potions:
-            tk.Label(pot_frame, text=f"{kind.upper()} pots:", bg=self.BG, fg=self.DIM,
-                     font=("Segoe UI", 9)).pack(side=tk.LEFT)
-            self.potion_previews[kind] = tk.Label(pot_frame, bg="black", text="(no region)",
-                                                  fg=self.DIM, font=("Segoe UI", 9))
-            self.potion_previews[kind].pack(side=tk.LEFT, padx=(6, 12))
+        self.image_rows = [("img_exp", "EXP image"), ("img_meso", "Mesos image"),
+                           ("img_hp", "HP pots image"), ("img_mp", "MP pots image")]
+        self.preview = preview("img_exp", "EXP:", 0, 0)
+        self.meso_preview = preview("img_meso", "Mesos:", 1, 0)
+        # HP and MP side by side in their own grid, so hiding one doesn't
+        # shift the images above
+        pots = tk.Frame(previews, bg=self.BG)
+        pots.grid(row=2, column=0, columnspan=2, sticky="w")
+        self.potion_previews = {"hp": preview("img_hp", "HP pots:", 0, 0, pots),
+                                "mp": preview("img_mp", "MP pots:", 0, 2, pots)}
 
         btns = tk.Frame(self.root, bg=self.BG)
         btns.pack(fill=tk.X, pady=8, **pad)
@@ -765,6 +760,10 @@ class App:
             rows_menu.add_checkbutton(label=label, variable=self.row_shown[key],
                                       command=lambda k=key: self._toggle_row(k))
         rows_menu.add_separator()
+        for key, label in self.image_rows:
+            rows_menu.add_checkbutton(label=label, variable=self.row_shown[key],
+                                      command=lambda k=key: self._toggle_row(k))
+        rows_menu.add_separator()
         rows_menu.add_command(label="Show all", command=self._show_all_rows)
         rows_btn["menu"] = rows_menu
         rows_btn.pack(side=tk.LEFT, padx=(12, 0))
@@ -791,14 +790,21 @@ class App:
         tk.Label(self.root, text="F1 reset · F2 hide/show", bg=self.BG, fg="#555",
                  font=("Segoe UI", 8)).pack(side=tk.BOTTOM, pady=(0, 4))
 
+    def _add_hideable(self, key, widgets):
+        """Register gridded widgets that the Rows menu shows / hides as one."""
+        self.row_widgets[key] = widgets
+        shown = key not in self.settings["hidden_rows"]
+        self.row_shown[key] = tk.BooleanVar(value=shown)
+        if not shown:
+            for w in widgets:
+                w.grid_remove()
+
     def _toggle_row(self, key):
-        name, value = self.row_widgets[key]
-        if self.row_shown[key].get():
-            name.grid()
-            value.grid()
-        else:
-            name.grid_remove()
-            value.grid_remove()
+        for w in self.row_widgets[key]:
+            if self.row_shown[key].get():
+                w.grid()
+            else:
+                w.grid_remove()
         self.settings["hidden_rows"] = [k for k, v in self.row_shown.items() if not v.get()]
         try:
             save_settings(self.settings)
