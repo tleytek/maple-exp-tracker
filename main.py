@@ -23,6 +23,7 @@ from PIL import Image, ImageTk
 import expocr
 import mesoocr
 import potionocr
+from problemlog import ProblemLog
 
 try:
     import keyboard  # global hotkeys; optional
@@ -42,6 +43,7 @@ REGION_FILES = {
     "mp": os.path.join(DATA_DIR, "mp_region.json"),
 }
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
+PROBLEMS_DIR = os.path.join(DATA_DIR, "problems")  # snapshots of failed reads
 
 POLL_RATE = 0.5  # seconds between screen reads
 CONFIRM_READS = 3  # matching reads needed to accept a level-up
@@ -142,6 +144,12 @@ def screen_capturer():
     if hasattr(mss, "MSS"):
         return mss.MSS()
     return mss.mss()
+
+
+def grab_full_screen():
+    """Screenshot of every monitor (for problem snapshots)."""
+    with screen_capturer() as sct:
+        return grab(sct, sct.monitors[0])
 
 
 def extract_number(pil_img):
@@ -597,6 +605,7 @@ class App:
         self.settings = load_settings()
         self.potion_misses = {k: 0 for k in self.potions}
         self.potion_preview_photos = {}
+        self.problems = ProblemLog(PROBLEMS_DIR, grab_full_screen)
         self.paused = False
         self.misses = 0
         self.meso_misses = 0
@@ -759,6 +768,8 @@ class App:
         rows_menu.add_command(label="Show all", command=self._show_all_rows)
         rows_btn["menu"] = rows_menu
         rows_btn.pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Button(opts, text="Problem snapshots", command=self.open_problems_folder,
+                   ).pack(side=tk.LEFT, padx=(8, 0))
 
         self.status = tk.StringVar(value="Starting…")
         tk.Label(self.root, textvariable=self.status, bg=self.BG, fg=self.DIM,
@@ -985,6 +996,7 @@ class App:
                     if current is None:
                         self.misses += 1
                         self.log(f"can't read: {how}", key=how)
+                        self._snapshot("exp", how, img, self.region)
                         if self.misses == 6:  # ~3s of failed reads
                             self.set_status(f"Can't read EXP — {how}. "
                                             "Use Select Region to fix.")
@@ -1006,6 +1018,10 @@ class App:
                         elif (current, percent) != after:
                             self.log(f"ignored {current:,} [{percent:.2f}%] "
                                      f"(doesn't match level EXP)", key="ignored")
+                            self._snapshot("exp", "reading doesn't match level EXP", img,
+                                           self.region,
+                                           f"read {current:,} [{percent:.2f}%], "
+                                           f"showing {fmt_int(after[0])} [{after[1] or 0:.2f}%]")
                     if msg:
                         self.set_status(msg)
                         self.log(msg)
@@ -1045,6 +1061,24 @@ class App:
         shown = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))))
         return ImageTk.PhotoImage(shown)
 
+    def _snapshot(self, kind, reason, img, region, detail=None):
+        """Save the problem's image for later diagnosis (only while the game
+        is the focused window; throttled per problem)."""
+        try:
+            path = self.problems.record(kind, reason, img, region, detail)
+        except Exception as e:
+            self.log(f"couldn't save problem snapshot: {e}", key="snapshot-error")
+            return
+        if path:
+            self.log(f"saved problem snapshot {os.path.basename(path)}")
+
+    def open_problems_folder(self):
+        os.makedirs(PROBLEMS_DIR, exist_ok=True)
+        try:
+            os.startfile(PROBLEMS_DIR)
+        except Exception as e:
+            self.set_status(f"Couldn't open {PROBLEMS_DIR}: {e}")
+
     def _show_preview(self, img):
         self.preview_photo = self._preview_image(img)
         self.preview.config(image=self.preview_photo, text="")
@@ -1056,6 +1090,7 @@ class App:
         if mesos is None:
             self.meso_misses += 1
             self.log(f"can't read mesos: {how}", key="meso:" + how)
+            self._snapshot("meso", how, img, self.meso_region)
             if self.meso_misses == 6:  # ~3s of failed reads
                 self.set_status(f"Can't read mesos — {how}. Keep the inventory "
                                 "open, or use Select Mesos to fix.")
@@ -1084,6 +1119,7 @@ class App:
         if total is None:
             self.potion_misses[kind] += 1
             self.log(f"can't read {name} pots: {how}", key=f"{kind}:{how}")
+            self._snapshot(kind, how, img, self.potion_regions[kind])
             if self.potion_misses[kind] == 6:  # ~3s of failed reads
                 self.set_status(f"Can't read {name} potions — {how}. Keep the inventory "
                                 f"open on the Use tab, or use Select {name} pots to fix.")
@@ -1100,6 +1136,8 @@ class App:
                     and before - p.pending > POTION_BIG_DROP:
                 self.log(f"{name} pots read {p.pending:,} — waiting to confirm a big drop",
                          key=f"{kind}:bigdrop")
+                self._snapshot(kind, "big drop in potion count", img, self.potion_regions[kind],
+                               f"{before:,} -> {p.pending:,}")
         if msg:
             self.set_status(msg)
             self.log(msg)

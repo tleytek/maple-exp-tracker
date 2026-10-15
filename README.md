@@ -64,6 +64,7 @@ To build the exe yourself, run **`build.bat`**. It writes
 | Pause | Stop reading the screen |
 | Always on top | Keep the window above the game |
 | Rows | Tick / untick which stats are shown (saved) |
+| Problem snapshots | Open the folder of saved problem images |
 | F1 | Reset the rate |
 | F2 | Hide / show the window |
 
@@ -89,6 +90,12 @@ Tips:
 - Nothing resets when you're idle: idle time counts against the numbers. The
   average restarts on level-up, death, Reset and F1.
 - Settings are saved in `%APPDATA%\MapleExpTracker`.
+- When a read fails or a reading is rejected while MapleStory is the focused
+  window, the app saves what it saw (the region's image and a full
+  screenshot) to `%APPDATA%\MapleExpTracker\problems`, with a line in
+  `problems.log` saying what went wrong. Nothing is saved while another
+  window is focused. The same problem is saved at most every 5 minutes,
+  and only the newest 200 snapshots are kept.
 
 ## How the reading works
 
@@ -113,6 +120,7 @@ Run the tests with:
 .venv\Scripts\python.exe test_expocr.py
 .venv\Scripts\python.exe test_mesoocr.py
 .venv\Scripts\python.exe test_potionocr.py
+.venv\Scripts\python.exe test_problemlog.py
 .venv\Scripts\python.exe test_tracker.py
 ```
 

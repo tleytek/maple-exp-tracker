@@ -38,6 +38,9 @@ def main():
         # 2. Same problem again soon: skipped. A different one: saved.
         check("same problem throttled", log.record("hp", "cut off", crop, region, now=1010) is None)
         check("other problem saved", log.record("hp", "no stack counts", crop, now=1010) is not None)
+        log.record("hp", "big drop", crop, detail="25 -> 3", now=1010)
+        with open(os.path.join(folder, "problems.log"), encoding="utf-8") as f:
+            check("detail logged", "hp  big drop (25 -> 3)  region=-" in f.read())
         check("same problem after interval", log.record("hp", "cut off", crop, now=1400) is not None)
 
         # 3. Another window focused (browser, the tracker itself): nothing saved.

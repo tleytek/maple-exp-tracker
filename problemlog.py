@@ -58,9 +58,12 @@ class ProblemLog:
         self.keep = keep
         self.last_saved = {}  # (kind, reason) -> time
 
-    def record(self, kind, reason, img, region=None, now=None):
+    def record(self, kind, reason, img, region=None, detail=None, now=None):
         """Save a snapshot of a problem. Returns the crop's path, or None
-        when skipped (game not focused, or saved recently)."""
+        when skipped (game not focused, or saved recently).
+
+        'reason' identifies the problem for throttling, so keep it fixed;
+        put changing values (the numbers read) in 'detail'."""
         now = time.time() if now is None else now
         key = (kind, reason)
         if now - self.last_saved.get(key, -1e18) < self.min_interval:
@@ -91,7 +94,9 @@ class ProblemLog:
         where = ("region={left},{top} {width}x{height}".format(**region)
                  if region else "region=-")
         with open(os.path.join(self.folder, "problems.log"), "a", encoding="utf-8") as f:
-            f.write(f"{when}  {kind}  {reason}  {where}  files={' '.join(files)}\n")
+            f.write(f"{when}  {kind}  {reason}"
+                    + (f" ({detail})" if detail else "")
+                    + f"  {where}  files={' '.join(files)}\n")
         self._prune()
         return crop_path
 
