@@ -248,6 +248,25 @@ def main():
     fails += check("net None without mesos",
                    net_mesos(MesoTracker(), hp, mp, 15, 25) is None)
 
+    # 23. Session average: total gained / session time, for EXP and mesos
+    #     (the /5 and /60 min rows are this times 5 and 60).
+    t = RateTracker()
+    t.session_start = 0
+    fails += check("no session average before any read", t.session_rate(120) is None)
+    t.feed(10, 1000, pct(1000))
+    t.feed(70, 4000, pct(4000))
+    fails += check("no session average from <30s", t.session_rate(20) is None)
+    fails += check("session average = gained / minutes (3000 in 2 min)",
+                   t.session_rate(120) == 1500, t.session_rate(120))
+    fails += check("session average keeps falling while idle",
+                   t.session_rate(240) == 750, t.session_rate(240))
+    m = MesoTracker()
+    m.session_start = 0
+    for now, v in ((1, 100), (2, 100), (30, 700), (31, 700)):
+        m.feed(now, v)
+    fails += check("meso session average (600 in 1 min)", m.session_rate(60) == 600,
+                   m.session_rate(60))
+
     print("ALL PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
 

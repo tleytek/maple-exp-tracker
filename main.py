@@ -213,6 +213,14 @@ class RollingGains:
                 break
         return max(0, self.session_gained - base_g), min(now - base_t, window)
 
+    def session_rate(self, now):
+        """Average per minute over the whole session: total gained divided by
+        the time since the session started. None until something has been
+        read, or while the session is too short to say."""
+        if self.current is None or now - self.session_start < ROLLING_MIN_SPAN:
+            return None
+        return self.session_gained / ((now - self.session_start) / 60)
+
     def rolling_rate(self, now, window=ROLLING_WINDOW):
         """Amount per minute over the last 'window' seconds, up to 'now'."""
         got = self.gained_in(now, window)
@@ -1425,7 +1433,6 @@ class App:
         self.vars["exp"].set(fmt_int(t.current))
         self.vars["percent"].set(f"{t.percent:.2f}%" if t.percent is not None else "—")
         self.progress["value"] = t.percent or 0
-        self.vars["rate_min"].set(fmt_int(t.rate))
         self._refresh_recent()
         self.vars["eta"].set(fmt_minutes(t.eta_minutes))
         self.vars["gained"].set(fmt_int(t.session_gained))
@@ -1446,13 +1453,27 @@ class App:
         self.vars["net_session"].set(fmt_int(net_mesos(
             m, hp, mp, self.settings["hp_price"], self.settings["mp_price"])))
 
+    # "/ 5 min" and "/ 60 min" rows: the session average per minute times
+    # this. Only "/ 1 min" is a rolling window (gained in the last 60 s).
+    AVERAGE_MULTIPLIERS = {300: 5, 3600: 60}
+
     def _refresh_recent(self):
         now = time.time()
-        for prefix, tracker in (("gain", self.tracker), ("meso", self.meso)):
-            for w in ROLLING_WINDOWS:
-                self.vars[f"{prefix}_{w}"].set(self._recent_text(tracker, now, w))
-        for w in ROLLING_WINDOWS:
-            self.vars[f"net_{w}"].set(self._net_text(now, w))
+        exp_avg = self.tracker.session_rate(now)
+        self.vars["rate_min"].set(fmt_int(exp_avg))
+        net_avg = None
+        meso_avg = self.meso.session_rate(now)
+        if meso_avg is not None:
+            net = net_mesos(self.meso, self.potions["hp"], self.potions["mp"],
+                            self.settings["hp_price"], self.settings["mp_price"])
+            net_avg = net / ((now - self.meso.session_start) / 60)
+        self.vars["gain_60"].set(self._recent_text(self.tracker, now, 60))
+        self.vars["meso_60"].set(self._recent_text(self.meso, now, 60))
+        self.vars["net_60"].set(self._net_text(now, 60))
+        for w, times in self.AVERAGE_MULTIPLIERS.items():
+            for prefix, per_min in (("gain", exp_avg), ("meso", meso_avg), ("net", net_avg)):
+                self.vars[f"{prefix}_{w}"].set(
+                    "—" if per_min is None else f"{int(round(per_min * times)):,}")
 
     def _net_text(self, now, w):
         got = None if self.paused else self.meso.gained_in(now, w)
