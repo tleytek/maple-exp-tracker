@@ -694,25 +694,27 @@ class App:
         rows = [
             ("exp", "EXP"),
             ("percent", "Progress"),
-            ("gain_60", "EXP / 1 min"),
+            ("rate_min", "EXP / 1 min"),
             ("gain_360", "EXP / 6 min"),
             ("gain_3600", "EXP / 60 min"),
-            ("rate_min", "EXP / min (average)"),
+            ("gain_60", "EXP / min (rolling)"),
             ("eta", "Time to level"),
             ("gained", "Gained (session)"),
             None,
             ("mesos", "Mesos"),
-            ("meso_60", "Mesos / 1 min"),
+            ("meso_rate", "Mesos / 1 min"),
             ("meso_360", "Mesos / 6 min"),
             ("meso_3600", "Mesos / 60 min"),
+            ("meso_60", "Mesos / min (rolling)"),
             ("meso_gained", "Mesos gained (session)"),
             ("meso_spent", "Mesos spent (session)"),
             None,
             ("pots_used", "HP / MP pots used"),
             ("pot_cost", "Potion cost (session)"),
-            ("net_60", "Net mesos / 1 min"),
+            ("net_rate", "Net mesos / 1 min"),
             ("net_360", "Net mesos / 6 min"),
             ("net_3600", "Net mesos / 60 min"),
+            ("net_60", "Net mesos / min (rolling)"),
             ("net_session", "Net mesos (session)"),
             None,
             ("session", "Session"),
@@ -729,7 +731,7 @@ class App:
             name = tk.Label(stats, text=label, bg=self.BG, fg=self.DIM, font=("Segoe UI", 10))
             var = tk.StringVar(value="—")
             self.vars[key] = var
-            big = key in ("exp", "gain_60", "mesos", "meso_60", "net_60")
+            big = key in ("exp", "rate_min", "mesos", "meso_rate", "net_rate")
             value = tk.Label(stats, textvariable=var, bg=self.BG,
                              fg=self.ACCENT if big else self.FG,
                              font=("Consolas", 14 if big else 12, "bold" if big else "normal"))
@@ -1499,6 +1501,8 @@ class App:
             net = net_mesos(self.meso, self.potions["hp"], self.potions["mp"],
                             self.settings["hp_price"], self.settings["mp_price"])
             net_avg = net / (self.meso.session_seconds(now) / 60)
+        self.vars["meso_rate"].set(fmt_int(meso_avg))
+        self.vars["net_rate"].set(fmt_int(net_avg))
         self.vars["gain_60"].set(self._recent_text(self.tracker, now, 60))
         self.vars["meso_60"].set(self._recent_text(self.meso, now, 60))
         self.vars["net_60"].set(self._net_text(now, 60))
