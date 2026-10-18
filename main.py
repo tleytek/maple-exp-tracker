@@ -91,7 +91,7 @@ def save_region(region, kind="exp"):
 DEFAULT_SETTINGS = {
     "hp_price": 0,  # mesos per potion
     "mp_price": 0,
-    "hidden_rows": [],  # stat rows the user unticked in the Rows menu
+    "hidden_rows": [],  # stat rows the user unticked in Settings
 }
 
 
@@ -674,7 +674,7 @@ class App:
             ("net_session", "Net mesos (session)"),
             None,
             ("session", "Session"),
-        ]  # None = section break in the Rows menu
+        ]  # None = section break in Settings
         self.row_layout = rows
         self.row_widgets = {}
         self.row_shown = {}
@@ -698,7 +698,7 @@ class App:
         self.progress.pack(fill=tk.X, pady=(2, 8), **pad)
 
         # Previews of what each region sees, on a grid so each one can be
-        # hidden and shown again in place (Rows menu).
+        # hidden and shown again in place (Settings).
         previews = tk.Frame(self.root, bg=self.BG)
         previews.pack(fill=tk.X, **pad)
 
@@ -728,7 +728,7 @@ class App:
         #   Select HP pots  | Select MP pots
         #   HP pot price    | MP pot price
         #   Reset           | Pause
-        #   Rows            | Problem snapshots
+        #   Settings        | Problem snapshots
         #   [ ] Always on top | [ ] Show log
         ctl = tk.Frame(self.root, bg=self.BG)
         ctl.pack(fill=tk.X, pady=8, **pad)
@@ -758,23 +758,8 @@ class App:
         self.pause_btn = ttk.Button(ctl, text="Pause", command=self.toggle_pause)
         place(self.pause_btn, 3, 1)
 
-        rows_btn = ttk.Menubutton(ctl, text="Rows")
-        rows_menu = tk.Menu(rows_btn, tearoff=0)
-        for row in self.row_layout:
-            if row is None:
-                rows_menu.add_separator()
-                continue
-            key, label = row
-            rows_menu.add_checkbutton(label=label, variable=self.row_shown[key],
-                                      command=lambda k=key: self._toggle_row(k))
-        rows_menu.add_separator()
-        for key, label in self.image_rows:
-            rows_menu.add_checkbutton(label=label, variable=self.row_shown[key],
-                                      command=lambda k=key: self._toggle_row(k))
-        rows_menu.add_separator()
-        rows_menu.add_command(label="Show all", command=self._show_all_rows)
-        rows_btn["menu"] = rows_menu
-        place(rows_btn, 4, 0)
+        self.settings_win = None
+        place(ttk.Button(ctl, text="Settings", command=self.open_settings), 4, 0)
         place(ttk.Button(ctl, text="Problem snapshots", command=self.open_problems_folder), 4, 1)
 
         self.on_top = tk.BooleanVar(value=True)
@@ -806,7 +791,7 @@ class App:
                  font=("Segoe UI", 8)).pack(side=tk.BOTTOM, pady=(0, 4))
 
     def _add_hideable(self, key, widgets):
-        """Register gridded widgets that the Rows menu shows / hides as one."""
+        """Register gridded widgets that Settings shows / hides as one."""
         self.row_widgets[key] = widgets
         shown = key not in self.settings["hidden_rows"]
         self.row_shown[key] = tk.BooleanVar(value=shown)
@@ -826,6 +811,50 @@ class App:
         except OSError as e:
             self.set_status(f"Couldn't save row choices: {e}")
         self.root.geometry("")  # shrink / grow to fit
+
+    SECTION_TITLES = ("EXP", "Mesos", "Potions & net mesos", "Session")
+
+    def open_settings(self):
+        """Settings window: tick boxes for every stat row and preview image."""
+        if self.settings_win is not None and self.settings_win.winfo_exists():
+            self.settings_win.deiconify()
+            self.settings_win.lift()
+            return
+        win = self.settings_win = tk.Toplevel(self.root)
+        win.title("Settings")
+        win.configure(bg=self.BG)
+        win.resizable(False, False)
+        win.attributes("-topmost", self.on_top.get())
+        win.transient(self.root)
+
+        body = tk.Frame(win, bg=self.BG)
+        body.pack(fill=tk.BOTH, padx=12, pady=(10, 4))
+        tk.Label(body, text="Show these rows", bg=self.BG, fg=self.FG,
+                 font=("Segoe UI", 11, "bold")).grid(row=0, column=0, columnspan=2,
+                                                     sticky="w", pady=(0, 6))
+        sections, current = [], []
+        for row in self.row_layout:
+            if row is None:
+                sections.append(current)
+                current = []
+            else:
+                current.append(row)
+        sections.append(current)
+        sections = list(zip(self.SECTION_TITLES, sections))
+        sections.append(("Preview images", self.image_rows))
+        for i, (title, rows) in enumerate(sections):
+            box = tk.Frame(body, bg=self.BG)
+            box.grid(row=1 + i // 2, column=i % 2, sticky="nw", padx=(0, 18), pady=(0, 10))
+            tk.Label(box, text=title, bg=self.BG, fg=self.DIM,
+                     font=("Segoe UI", 9, "bold")).pack(anchor="w")
+            for key, label in rows:
+                ttk.Checkbutton(box, text=label, variable=self.row_shown[key],
+                                command=lambda k=key: self._toggle_row(k)).pack(anchor="w")
+
+        btns = tk.Frame(win, bg=self.BG)
+        btns.pack(fill=tk.X, padx=12, pady=(0, 10))
+        ttk.Button(btns, text="Show all", command=self._show_all_rows).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Close", command=win.destroy).pack(side=tk.RIGHT)
 
     def _show_all_rows(self):
         for key, shown in self.row_shown.items():
@@ -861,6 +890,8 @@ class App:
 
     def _apply_on_top(self):
         self.root.attributes("-topmost", self.on_top.get())
+        if getattr(self, "settings_win", None) is not None and self.settings_win.winfo_exists():
+            self.settings_win.attributes("-topmost", self.on_top.get())
 
     def _bind_hotkeys(self):
         if keyboard is None:
