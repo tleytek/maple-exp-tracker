@@ -87,10 +87,13 @@ Tips:
   hiding a stack isn't counted as potions used. The last potion of a region
   (1 → empty) isn't counted, because an empty slot looks like a closed
   inventory.
-- **EXP / 1 min**, **5 min** and **60 min** are the EXP you actually gained in
-  that much time up to now, so they drop as soon as you slow down. Until a
-  window has filled, the time it covers so far is shown in brackets, e.g.
-  `13,750 (23m)`. Time to level uses your pace over the last 5 minutes.
+- **EXP / 1 min** is the EXP you actually gained in the last 60 seconds, so
+  it drops as soon as you slow down (until a minute has passed, the time it
+  covers is shown in brackets, e.g. `750 (23s)`). **EXP / min (average)** is
+  your session total divided by session time (paused time doesn't count), and
+  **EXP / 6 min** and **EXP / 60 min** are that average × 6 and × 60. Mesos and
+  net mesos work the same way. Time to level uses your pace over the last 5
+  minutes.
 - Nothing resets when you're idle: idle time counts against the numbers. The
   average restarts on level-up, death, Reset and F1.
 - Settings are saved in `%APPDATA%\MapleExpTracker`.

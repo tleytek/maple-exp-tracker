@@ -119,7 +119,8 @@ def load_settings():
             settings["overlay_opacity"] = float(opacity)
         hidden = saved.get("hidden_rows")
         if isinstance(hidden, list):
-            settings["hidden_rows"] = [k for k in hidden if isinstance(k, str)]
+            renamed = {"gain_300": "gain_360", "meso_300": "meso_360", "net_300": "net_360"}
+            settings["hidden_rows"] = [renamed.get(k, k) for k in hidden if isinstance(k, str)]
     return settings
 
 
@@ -694,7 +695,7 @@ class App:
             ("exp", "EXP"),
             ("percent", "Progress"),
             ("gain_60", "EXP / 1 min"),
-            ("gain_300", "EXP / 5 min"),
+            ("gain_360", "EXP / 6 min"),
             ("gain_3600", "EXP / 60 min"),
             ("rate_min", "EXP / min (average)"),
             ("eta", "Time to level"),
@@ -702,7 +703,7 @@ class App:
             None,
             ("mesos", "Mesos"),
             ("meso_60", "Mesos / 1 min"),
-            ("meso_300", "Mesos / 5 min"),
+            ("meso_360", "Mesos / 6 min"),
             ("meso_3600", "Mesos / 60 min"),
             ("meso_gained", "Mesos gained (session)"),
             ("meso_spent", "Mesos spent (session)"),
@@ -710,7 +711,7 @@ class App:
             ("pots_used", "HP / MP pots used"),
             ("pot_cost", "Potion cost (session)"),
             ("net_60", "Net mesos / 1 min"),
-            ("net_300", "Net mesos / 5 min"),
+            ("net_360", "Net mesos / 6 min"),
             ("net_3600", "Net mesos / 60 min"),
             ("net_session", "Net mesos (session)"),
             None,
@@ -1484,9 +1485,9 @@ class App:
         self.vars["net_session"].set(fmt_int(net_mesos(
             m, hp, mp, self.settings["hp_price"], self.settings["mp_price"])))
 
-    # "/ 5 min" and "/ 60 min" rows: the session average per minute times
+    # "/ 6 min" and "/ 60 min" rows: the session average per minute times
     # this. Only "/ 1 min" is a rolling window (gained in the last 60 s).
-    AVERAGE_MULTIPLIERS = {300: 5, 3600: 60}
+    AVERAGE_MULTIPLIERS = {360: 6, 3600: 60}
 
     def _refresh_recent(self):
         now = time.time()
