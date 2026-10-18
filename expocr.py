@@ -176,7 +176,13 @@ def _candidates(rgb):
         yield None, f"only one bracket found; the {side} side of the text is cut off"
         return
     for i in range(len(brackets) - 2, -1, -1):
-        prev_right = (brackets[i - 1]["left"] + brackets[i - 1]["width"]) if i > 0 else 0
+        # The EXP number starts after the previous bracket on the same text
+        # line. Brackets elsewhere (e.g. a 1-px green sliver of the EXP bar
+        # below the text) mustn't cut the number short.
+        same_line = [b for b in brackets[:i]
+                     if abs(b["top"] - brackets[i]["top"]) <= 2
+                     and abs(b["height"] - brackets[i]["height"]) <= 2]
+        prev_right = (same_line[-1]["left"] + same_line[-1]["width"]) if same_line else 0
         yield _segment_pair(rgb, brackets[i], brackets[i + 1], prev_right)
 
 
