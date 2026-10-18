@@ -213,13 +213,35 @@ class RollingGains:
                 break
         return max(0, self.session_gained - base_g), min(now - base_t, window)
 
+    def _start_clock(self):
+        self.session_start = time.time()
+        self.paused_total = 0.0  # seconds spent paused this session
+        self.paused_since = None
+
+    def pause(self, now):
+        if self.paused_since is None:
+            self.paused_since = now
+
+    def resume(self, now):
+        if self.paused_since is not None:
+            self.paused_total += now - self.paused_since
+            self.paused_since = None
+
+    def session_seconds(self, now):
+        """Time since the session started, not counting time paused."""
+        paused = self.paused_total
+        if self.paused_since is not None:
+            paused += now - self.paused_since
+        return max(0.0, now - self.session_start - paused)
+
     def session_rate(self, now):
         """Average per minute over the whole session: total gained divided by
-        the time since the session started. None until something has been
-        read, or while the session is too short to say."""
-        if self.current is None or now - self.session_start < ROLLING_MIN_SPAN:
+        the (unpaused) session time. None until something has been read, or
+        while the session is too short to say."""
+        secs = self.session_seconds(now)
+        if self.current is None or secs < ROLLING_MIN_SPAN:
             return None
-        return self.session_gained / ((now - self.session_start) / 60)
+        return self.session_gained / (secs / 60)
 
     def rolling_rate(self, now, window=ROLLING_WINDOW):
         """Amount per minute over the last 'window' seconds, up to 'now'."""
@@ -246,7 +268,7 @@ class RateTracker(RollingGains):
         self.pending_kind = None
         self.pending_range = None
         self.pending_count = 0
-        self.session_start = time.time()
+        self._start_clock()
         self.session_gained = 0
         self.levels = 0
         # (time, session_gained) on every accepted change. Uses total gained
@@ -400,7 +422,7 @@ class ConfirmedAmount(RollingGains):
         self.gain_log = deque()
         self.pending = None
         self.pending_count = 0
-        self.session_start = time.time()
+        self._start_clock()
         self.last_seen = None
 
     def _confirmed(self, now, value, needed=MESO_CONFIRM_READS):
@@ -1148,11 +1170,20 @@ class App:
         self.meso.reset_session()
         for p in self.potions.values():
             p.reset_session()
+        if self.paused:
+            for t in self._trackers():
+                t.pause(time.time())
         self.set_status("Session reset.")
         self._refresh()
 
+    def _trackers(self):
+        return [self.tracker, self.meso, *self.potions.values()]
+
     def toggle_pause(self):
         self.paused = not self.paused
+        now = time.time()
+        for t in self._trackers():  # paused time doesn't count as session time
+            (t.pause if self.paused else t.resume)(now)
         self.pause_btn.config(text="Resume" if self.paused else "Pause")
         self.set_status("Paused." if self.paused else "Resumed.")
 
@@ -1329,7 +1360,7 @@ class App:
     def _tick(self):
         if not self.running:
             return
-        elapsed = (time.time() - self.tracker.session_start) / 60
+        elapsed = self.tracker.session_seconds(time.time()) / 60
         self.vars["session"].set(fmt_minutes(elapsed) +
                                  (f" · {self.tracker.levels} lvl" if self.tracker.levels else ""))
         self._refresh_recent()  # keeps decaying even if readings stop
@@ -1466,7 +1497,7 @@ class App:
         if meso_avg is not None:
             net = net_mesos(self.meso, self.potions["hp"], self.potions["mp"],
                             self.settings["hp_price"], self.settings["mp_price"])
-            net_avg = net / ((now - self.meso.session_start) / 60)
+            net_avg = net / (self.meso.session_seconds(now) / 60)
         self.vars["gain_60"].set(self._recent_text(self.tracker, now, 60))
         self.vars["meso_60"].set(self._recent_text(self.meso, now, 60))
         self.vars["net_60"].set(self._net_text(now, 60))

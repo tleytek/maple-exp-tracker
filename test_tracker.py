@@ -267,6 +267,22 @@ def main():
     fails += check("meso session average (600 in 1 min)", m.session_rate(60) == 600,
                    m.session_rate(60))
 
+    # 24. Paused time doesn't count as session time.
+    t = RateTracker()
+    t.session_start = 0
+    t.feed(10, 1000, pct(1000))
+    t.feed(60, 4000, pct(4000))   # +3000
+    t.pause(60)
+    fails += check("session clock stops while paused", t.session_seconds(600) == 60,
+                   t.session_seconds(600))
+    fails += check("average frozen while paused", t.session_rate(600) == 3000,
+                   t.session_rate(600))
+    t.resume(600)
+    fails += check("clock runs again after resume", t.session_seconds(660) == 120,
+                   t.session_seconds(660))
+    fails += check("average after resume (3000 in 2 active min)", t.session_rate(660) == 1500,
+                   t.session_rate(660))
+
     print("ALL PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
 
