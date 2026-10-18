@@ -42,6 +42,15 @@ def main():
         with open(os.path.join(folder, "problems.log"), encoding="utf-8") as f:
             check("detail logged", "hp  big drop (25 -> 3)  region=-" in f.read())
         check("same problem after interval", log.record("hp", "cut off", crop, now=1400) is not None)
+        # Numbers in a reason are the value read, not a different problem.
+        check("stack 161 saved", log.record("mp", "a stack of 161 isn't a potion stack", crop, now=1500) is not None)
+        check("stack 160 throttled with it",
+              log.record("mp", "a stack of 160 isn't a potion stack", crop, now=1510) is None)
+        # A black frame (map change / loading) isn't a reading problem.
+        check("black crop skipped",
+              log.record("exp", "no brackets", Image.new("RGB", (20, 10)), now=1500) is None)
+        check("black skip doesn't use up the throttle",
+              log.record("exp", "no brackets", crop, now=1501) is not None)
 
         # 3. Another window focused (browser, the tracker itself): nothing saved.
         focus["exe"] = "chrome.exe"
@@ -54,8 +63,8 @@ def main():
         check("saved once game focused again", log.record("mp", "cut off", crop, now=2001) is not None)
 
         # 4. Only the newest 'keep' snapshots stay.
-        for i in range(5):
-            log.record("exp", f"reason {i}", crop, now=3000 + i)
+        for i in "abcde":
+            log.record("exp", f"reason {i}", crop, now=3000 + ord(i))
         crops = [f for f in os.listdir(folder) if f.endswith("_crop.png")]
         screens = [f for f in os.listdir(folder) if f.endswith("_screen.png")]
         check("pruned to 3", len(crops) == 3 and len(screens) == 3, (crops, screens))

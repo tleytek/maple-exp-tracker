@@ -13,12 +13,22 @@ problem is saved at most once every few minutes so the folder stays small.
 """
 import ctypes
 import os
+import re
 import sys
 import time
 
 GAME_PROCESS = "maplestory.exe"
 MIN_INTERVAL = 300  # seconds between snapshots of the same problem
 KEEP = 200          # newest snapshots kept; older files are deleted
+BLANK_MAX = 16      # a crop no brighter than this (every channel) is a black screen
+
+
+def _blank(img):
+    """True if the image is (almost) solid black, as during map changes."""
+    try:
+        return max(hi for _, hi in img.convert("RGB").getextrema()) <= BLANK_MAX
+    except Exception:
+        return False
 
 
 def foreground_process():
@@ -65,11 +75,15 @@ class ProblemLog:
         'reason' identifies the problem for throttling, so keep it fixed;
         put changing values (the numbers read) in 'detail'."""
         now = time.time() if now is None else now
-        key = (kind, reason)
+        # Readers put the number they saw in some reasons ("a stack of 161
+        # isn't ..."); throttle those as one problem, not one per number.
+        key = (kind, re.sub(r"\d[\d,.]*", "#", reason))
         if now - self.last_saved.get(key, -1e18) < self.min_interval:
             return None
         if self.focused() != GAME_PROCESS:
             return None
+        if _blank(img):
+            return None  # black frame: map change / loading screen, not a reading problem
         self.last_saved[key] = now
         os.makedirs(self.folder, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
