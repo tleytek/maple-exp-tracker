@@ -592,6 +592,14 @@ class App:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Maple EXP Tracker")
+        # Meso coin icon for the title bar and taskbar (bundled into the exe;
+        # next to main.py when run from source)
+        icon = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__))),
+                            "meso.ico")
+        try:
+            self.root.iconbitmap(default=icon)
+        except tk.TclError:
+            pass
         self.root.configure(bg=self.BG)
         self.root.minsize(360, 300)
         self.root.protocol("WM_DELETE_WINDOW", self.quit)

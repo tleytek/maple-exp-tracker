@@ -10,6 +10,7 @@ if not exist ".venv\Scripts\python.exe" (
 if errorlevel 1 exit /b 1
 
 .venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed ^
+    --icon meso.ico --add-data "meso.ico;." ^
     --name MapleExpTracker main.py
 if errorlevel 1 exit /b 1
 
