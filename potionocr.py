@@ -24,7 +24,7 @@ import numpy as np
 from expocr import _components, _segments
 
 GLYPH_H = 9
-MAX_STACK = 300  # potions per slot (live stacks of 161 seen); bigger is ammo etc.
+MAX_STACK = 9999  # potions per slot; a bigger number isn't a stack count
 MAX_SCALE = 4
 MAX_ERRORS = 3   # stray / missing pixels tolerated when matching a digit
 MIN_GLYPH_PIXELS = 5  # fewer lit pixels than this is a stray icon pixel ("1" has 10)

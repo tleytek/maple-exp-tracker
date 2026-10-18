@@ -40,19 +40,21 @@ def main():
         return img[t:b, l:r]
 
     # 1. every digit from the capture, read as whole stacks (rows 1 and 5 hold
-    #    shuriken/arrow stacks, so lift the potion limit to check their digits)
-    limit, potionocr.MAX_STACK = potionocr.MAX_STACK, 10_000
+    #    shuriken/arrow stacks; their counts are within the potion limit)
     check("row 1 digits (500 x4, 482)", potionocr.read_stacks(crop(slots(0, 1, 5))),
           [500, 500, 500, 500, 482])
     check("row 5 digits (1, 2, 3, 627)", potionocr.read_stacks(crop(slots(0, 5, 4))),
           [1, 2, 3, 627])
-    potionocr.MAX_STACK = limit
     check("row 2 HP/MP pots (100, 73, empty, 25, 34)", potionocr.read(crop(slots(0, 2, 5))), 232)
     check("row 3 (60, 12, 2, 60, 29)", potionocr.read(crop(slots(0, 3, 5))), 163)
     check("row 4 (10, 28 with icon pixels in the 8, 1, 1, 1)",
           potionocr.read(crop(slots(0, 4, 5))), 41)
-    check("non-potion stacks refused", potionocr.read(crop(slots(0, 1, 5))), None,
+    check("stacks up to 9999 accepted", potionocr.read(crop(slots(0, 1, 5))), 2482)
+    # the limit still refuses bigger stacks (lowered here: no 5-digit capture)
+    limit, potionocr.MAX_STACK = potionocr.MAX_STACK, 499
+    check("stacks over the limit refused", potionocr.read(crop(slots(0, 1, 5))), None,
           "isn't a potion stack")
+    potionocr.MAX_STACK = limit
 
     # 2. typical potion selections, including a selected (highlighted) slot
     check("100 in the selected slot", potionocr.read(crop(slots(0, 2))), 100)
