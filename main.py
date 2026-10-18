@@ -3,7 +3,7 @@
 A small always-available window that OCRs the EXP text on screen and shows
 current EXP, %, EXP per minute/hour and time to level.
 
-Hotkeys (global): F1 = reset rate, F2 = hide/show window.
+Hotkeys (global): F1 = reset rate, F2 = hide/show window, F3 = overlay mode.
 """
 import ctypes
 import json
@@ -15,6 +15,12 @@ import time
 import tkinter as tk
 from collections import deque
 from tkinter import ttk
+
+# numpy's OpenBLAS reserves ~32 MB of buffers per CPU thread on import
+# (~500 MB on a 16-thread PC), which shows up as the app's memory use. The
+# readers do no matrix maths, so one BLAS thread is plenty. Must be set
+# before numpy is imported.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 import mss
 import numpy as np
