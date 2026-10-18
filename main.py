@@ -601,7 +601,7 @@ class App:
         except tk.TclError:
             pass
         self.root.configure(bg=self.BG)
-        self.root.minsize(360, 300)
+        self.root.minsize(300, 150)
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
 
         self.tracker = RateTracker()
@@ -678,21 +678,21 @@ class App:
         self.row_layout = rows
         self.row_widgets = {}
         self.row_shown = {}
-        for i, row in enumerate(rows):
+        self.stats_frame = stats
+        self.stat_cells = []  # (key, name label, value label), in display order
+        for row in rows:
             if row is None:
                 continue
             key, label = row
             name = tk.Label(stats, text=label, bg=self.BG, fg=self.DIM, font=("Segoe UI", 10))
-            name.grid(row=i, column=0, sticky="w", pady=1)
             var = tk.StringVar(value="—")
             self.vars[key] = var
             big = key in ("exp", "gain_60", "mesos", "meso_60", "net_60")
             value = tk.Label(stats, textvariable=var, bg=self.BG,
                              fg=self.ACCENT if big else self.FG,
                              font=("Consolas", 14 if big else 12, "bold" if big else "normal"))
-            value.grid(row=i, column=1, sticky="e", pady=1)
+            self.stat_cells.append((key, name, value))
             self._add_hideable(key, (name, value))
-        stats.columnconfigure(1, weight=1)
 
         self.progress = ttk.Progressbar(self.root, maximum=100, style="Exp.Horizontal.TProgressbar")
         self.progress.pack(fill=tk.X, pady=(2, 8), **pad)
@@ -720,23 +720,24 @@ class App:
         # shift the images above
         pots = tk.Frame(previews, bg=self.BG)
         pots.grid(row=2, column=0, columnspan=2, sticky="w")
+        self.preview_frames = (pots, previews)
         self.potion_previews = {"hp": preview("img_hp", "HP pots:", 0, 0, pots),
                                 "mp": preview("img_mp", "MP pots:", 0, 2, pots)}
 
-        # Controls in two equal-width columns, so the window stays narrow:
+        # Controls in equal-width columns: two when the window is narrow,
+        # four or six when it's wide (see _relayout). In order:
         #   Select EXP      | Select Mesos
         #   Select HP pots  | Select MP pots
         #   HP pot price    | MP pot price
         #   Reset           | Pause
         #   Settings        | Problem snapshots
         #   [ ] Always on top | [ ] Show log
-        ctl = tk.Frame(self.root, bg=self.BG)
+        ctl = self.ctl_frame = tk.Frame(self.root, bg=self.BG)
         ctl.pack(fill=tk.X, pady=8, **pad)
-        ctl.columnconfigure((0, 1), weight=1, uniform="ctl")
+        self.ctl_cells = []
 
-        def place(widget, row, col):
-            widget.grid(row=row, column=col, sticky="ew",
-                        padx=(0, 4) if col == 0 else (4, 0), pady=2)
+        def place(widget, row, col):  # (row, col) in the two-column layout
+            self.ctl_cells.append((row, col, widget))
 
         place(ttk.Button(ctl, text="Select EXP", command=self.select_region), 0, 0)
         place(ttk.Button(ctl, text="Select Mesos", command=self.select_meso_region), 0, 1)
@@ -771,9 +772,10 @@ class App:
                               command=self._toggle_log), 5, 1)
 
         self.status = tk.StringVar(value="Starting…")
-        tk.Label(self.root, textvariable=self.status, bg=self.BG, fg=self.DIM,
-                 font=("Segoe UI", 9), anchor="w", wraplength=380, justify="left",
-                 ).pack(fill=tk.X, pady=(6, 8), **pad)
+        self.status_label = tk.Label(self.root, textvariable=self.status, bg=self.BG,
+                                     fg=self.DIM, font=("Segoe UI", 9), anchor="w",
+                                     wraplength=380, justify="left")
+        self.status_label.pack(fill=tk.X, pady=(6, 8), **pad)
 
         # Log panel (hidden until "Show log" is ticked)
         self.log_frame = tk.Frame(self.root, bg=self.BG)
@@ -790,6 +792,102 @@ class App:
         tk.Label(self.root, text="F1 reset · F2 hide/show", bg=self.BG, fg="#555",
                  font=("Segoe UI", 8)).pack(side=tk.BOTTOM, pady=(0, 4))
 
+        self.ctl_cells = [w for _, _, w in sorted(self.ctl_cells, key=lambda c: c[:2])]
+        self._shrink_empty_previews()
+        self._layout = (None, None)  # (stat columns, control columns)
+        self._relayout()
+        self.root.bind("<Configure>", self._on_configure)
+
+    # ---- responsive layout --------------------------------------------- #
+    STAT_COL_W = 250   # px at 96 dpi per column of stats
+    CTL_COL_W = 140    # px at 96 dpi per column of buttons
+    MAX_STAT_COLS = 4
+
+    def _on_configure(self, event):
+        if event.widget is self.root:
+            self._relayout()
+
+    def _relayout(self, force=False):
+        """Reflow to the window's width: a tall narrow window lists the stats
+        in one column with the buttons in two; a wide one spreads the stats
+        over several columns and the buttons over four or six."""
+        width = max(self.root.winfo_width(), self.root.winfo_reqwidth()
+                    if self.root.winfo_width() <= 1 else 0)
+        self.status_label.config(wraplength=max(200, width - 30))
+        dpi = self.root.winfo_fpixels("1i") / 96
+        shown = [c for c in self.stat_cells if self.row_shown[c[0]].get()]
+        stat_cols = max(1, min(self.MAX_STAT_COLS, len(shown) or 1,
+                               int((width - 20) // (self.STAT_COL_W * dpi))))
+        ctl_cols = max(2, min(6, int((width - 20) // (self.CTL_COL_W * dpi)) // 2 * 2))
+        if (stat_cols, ctl_cols) == self._layout and not force:
+            return
+        changed = (stat_cols, ctl_cols) != self._layout
+        self._layout = (stat_cols, ctl_cols)
+        self._layout_stats(shown, stat_cols)
+        self._layout_controls(ctl_cols)
+        if changed and self._layout != (None, None):
+            self._fit_height()
+
+    def _stat_columns(self, shown, cols):
+        """Split the shown stats into at most 'cols' columns, keeping each
+        section (EXP, mesos, potions, session) whole: start with a column per
+        section and merge the adjacent pair that makes the shortest column
+        until they fit."""
+        shown_keys = {c[0] for c in shown}
+        by_key = {c[0]: c for c in shown}
+        groups, current = [], []
+        for row in self.row_layout:
+            if row is None:
+                groups.append(current)
+                current = []
+            elif row[0] in shown_keys:
+                current.append(by_key[row[0]])
+        groups.append(current)
+        groups = [g for g in groups if g]
+        while len(groups) > max(1, cols):
+            i = min(range(len(groups) - 1), key=lambda j: len(groups[j]) + len(groups[j + 1]))
+            groups[i:i + 2] = [groups[i] + groups[i + 1]]
+        # Room to spare (few rows shown on a wide window): split the tallest
+        # column so the stats still spread out sideways.
+        while len(groups) < cols:
+            i = max(range(len(groups)), key=lambda j: len(groups[j]))
+            if len(groups[i]) < 2:
+                break
+            half = -(-len(groups[i]) // 2)
+            groups[i:i + 1] = [groups[i][:half], groups[i][half:]]
+        return groups
+
+    def _layout_stats(self, shown, cols):
+        """Stats in columns, top to bottom, one or more sections per column."""
+        frame = self.stats_frame
+        for _, name, value in self.stat_cells:
+            name.grid_forget()
+            value.grid_forget()
+        columns = self._stat_columns(shown, cols)
+        for c, column in enumerate(columns):
+            for r, (_, name, value) in enumerate(column):
+                name.grid(row=r, column=2 * c, sticky="w", pady=1,
+                          padx=(0 if c == 0 else 24, 8))
+                value.grid(row=r, column=2 * c + 1, sticky="e", pady=1)
+        cols = len(columns)
+        for c in range(2 * self.MAX_STAT_COLS):
+            frame.columnconfigure(c, weight=1 if c % 2 and c < 2 * cols else 0)
+
+    def _layout_controls(self, cols):
+        frame = self.ctl_frame
+        for i, w in enumerate(self.ctl_cells):
+            r, c = divmod(i, cols)
+            w.grid(row=r, column=c, sticky="ew", padx=(0 if c == 0 else 4, 0), pady=2)
+        for c in range(6):
+            frame.columnconfigure(c, weight=1 if c < cols else 0,
+                                  uniform="ctl" if c < cols else "")
+
+    def _fit_height(self):
+        """Keep the window's width, size its height to the content."""
+        self.root.update_idletasks()
+        if self.root.winfo_width() > 1:
+            self.root.geometry(f"{self.root.winfo_width()}x{self.root.winfo_reqheight()}")
+
     def _add_hideable(self, key, widgets):
         """Register gridded widgets that Settings shows / hides as one."""
         self.row_widgets[key] = widgets
@@ -800,17 +898,21 @@ class App:
                 w.grid_remove()
 
     def _toggle_row(self, key):
-        for w in self.row_widgets[key]:
-            if self.row_shown[key].get():
-                w.grid()
-            else:
-                w.grid_remove()
+        if any(key == k for k, _, _ in self.stat_cells):
+            self._relayout(force=True)
+        else:
+            for w in self.row_widgets[key]:
+                if self.row_shown[key].get():
+                    w.grid()
+                else:
+                    w.grid_remove()
+            self._shrink_empty_previews()
         self.settings["hidden_rows"] = [k for k, v in self.row_shown.items() if not v.get()]
         try:
             save_settings(self.settings)
         except OSError as e:
             self.set_status(f"Couldn't save row choices: {e}")
-        self.root.geometry("")  # shrink / grow to fit
+        self._fit_height()
 
     SECTION_TITLES = ("EXP", "Mesos", "Potions & net mesos", "Session")
 
@@ -856,6 +958,13 @@ class App:
         ttk.Button(btns, text="Show all", command=self._show_all_rows).pack(side=tk.LEFT)
         ttk.Button(btns, text="Close", command=win.destroy).pack(side=tk.RIGHT)
 
+    def _shrink_empty_previews(self):
+        """A Tk frame keeps its last size when its last child is hidden;
+        collapse the preview frames when every image in them is hidden."""
+        for frame in self.preview_frames:
+            if not frame.grid_slaves():
+                frame.configure(width=1, height=1)
+
     def _show_all_rows(self):
         for key, shown in self.row_shown.items():
             if not shown.get():
@@ -867,7 +976,7 @@ class App:
             self.log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 6))
         else:
             self.log_frame.pack_forget()
-            self.root.geometry("")  # shrink back
+        self._fit_height()
 
     def log(self, text, key=None):
         """Append a line to the log. Lines with the same key collapse into a
