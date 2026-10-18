@@ -92,7 +92,9 @@ DEFAULT_SETTINGS = {
     "hp_price": 0,  # mesos per potion
     "mp_price": 0,
     "hidden_rows": [],  # stat rows the user unticked in Settings
+    "overlay_opacity": 0.8,  # window opacity in overlay mode (F3)
 }
+MIN_OPACITY = 0.2
 
 
 def load_settings():
@@ -106,6 +108,9 @@ def load_settings():
         for key in ("hp_price", "mp_price"):
             if isinstance(saved.get(key), (int, float)) and saved[key] >= 0:
                 settings[key] = saved[key]
+        opacity = saved.get("overlay_opacity")
+        if isinstance(opacity, (int, float)) and MIN_OPACITY <= opacity <= 1:
+            settings["overlay_opacity"] = float(opacity)
         hidden = saved.get("hidden_rows")
         if isinstance(hidden, list):
             settings["hidden_rows"] = [k for k in hidden if isinstance(k, str)]
@@ -730,7 +735,7 @@ class App:
         #   Select HP pots  | Select MP pots
         #   HP pot price    | MP pot price
         #   Reset           | Pause
-        #   Settings        | Problem snapshots
+        #   Settings        | Overlay (F3)
         #   [ ] Always on top | [ ] Show log
         ctl = self.ctl_frame = tk.Frame(self.root, bg=self.BG)
         ctl.pack(fill=tk.X, pady=8, **pad)
@@ -761,7 +766,7 @@ class App:
 
         self.settings_win = None
         place(ttk.Button(ctl, text="Settings", command=self.open_settings), 4, 0)
-        place(ttk.Button(ctl, text="Problem snapshots", command=self.open_problems_folder), 4, 1)
+        place(ttk.Button(ctl, text="Overlay (F3)", command=self.toggle_overlay), 4, 1)
 
         self.on_top = tk.BooleanVar(value=True)
         place(ttk.Checkbutton(ctl, text="Always on top", variable=self.on_top,
@@ -789,7 +794,7 @@ class App:
         self._last_log_key = None
         self._repeat = 0
 
-        tk.Label(self.root, text="F1 reset · F2 hide/show", bg=self.BG, fg="#555",
+        tk.Label(self.root, text="F1 reset · F2 hide/show · F3 overlay", bg=self.BG, fg="#555",
                  font=("Segoe UI", 8)).pack(side=tk.BOTTOM, pady=(0, 4))
 
         self.ctl_cells = [w for _, _, w in sorted(self.ctl_cells, key=lambda c: c[:2])]
@@ -797,6 +802,15 @@ class App:
         self._layout = (None, None)  # (stat columns, control columns)
         self._relayout()
         self.root.bind("<Configure>", self._on_configure)
+
+        self.overlay = False
+        self._overlay_hidden = []
+        self._drag_from = None
+        self._opacity_save = None
+        # Events from every widget in the window reach bindings on the root
+        self.root.bind("<ButtonPress-1>", self._overlay_press, add="+")
+        self.root.bind("<B1-Motion>", self._overlay_drag, add="+")
+        self.root.bind("<Double-Button-1>", self._overlay_double_click, add="+")
 
     # ---- responsive layout --------------------------------------------- #
     STAT_COL_W = 250   # px at 96 dpi per column of stats
@@ -953,9 +967,35 @@ class App:
                 ttk.Checkbutton(box, text=label, variable=self.row_shown[key],
                                 command=lambda k=key: self._toggle_row(k)).pack(anchor="w")
 
+        ttk.Button(body, text="Show all rows", command=self._show_all_rows,
+                   ).grid(row=4, column=0, sticky="w", pady=(0, 12))
+
+        over = tk.Frame(win, bg=self.BG)
+        over.pack(fill=tk.X, padx=12, pady=(0, 8))
+        tk.Label(over, text="Overlay mode (F3)", bg=self.BG, fg=self.FG,
+                 font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        tk.Label(over, text="Borderless, see-through, stats only. Drag to move; "
+                            "F3 or double-click to go back.",
+                 bg=self.BG, fg=self.DIM, font=("Segoe UI", 9), wraplength=360,
+                 justify="left").pack(anchor="w", pady=(0, 4))
+        row = tk.Frame(over, bg=self.BG)
+        row.pack(fill=tk.X)
+        tk.Label(row, text="Opacity", bg=self.BG, fg=self.FG,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        pct = tk.StringVar(value=f"{self.settings['overlay_opacity']:.0%}")
+        tk.Label(row, textvariable=pct, width=5, bg=self.BG, fg=self.FG,
+                 font=("Consolas", 10)).pack(side=tk.RIGHT)
+
+        def on_scale(value):
+            pct.set(f"{float(value):.0%}")
+            self._set_overlay_opacity(float(value))
+        ttk.Scale(row, from_=MIN_OPACITY, to=1.0, value=self.settings["overlay_opacity"],
+                  command=on_scale).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+
         btns = tk.Frame(win, bg=self.BG)
-        btns.pack(fill=tk.X, padx=12, pady=(0, 10))
-        ttk.Button(btns, text="Show all", command=self._show_all_rows).pack(side=tk.LEFT)
+        btns.pack(fill=tk.X, padx=12, pady=(4, 10))
+        ttk.Button(btns, text="Problem snapshots", command=self.open_problems_folder,
+                   ).pack(side=tk.LEFT)
         ttk.Button(btns, text="Close", command=win.destroy).pack(side=tk.RIGHT)
 
     def _shrink_empty_previews(self):
@@ -1004,12 +1044,16 @@ class App:
 
     def _bind_hotkeys(self):
         if keyboard is None:
+            # no global hotkeys: F3 still works while this window has focus
+            self.root.bind("<F3>", lambda e: self.toggle_overlay())
             return
         try:
             keyboard.add_hotkey("f1", lambda: self.results.put(("hotkey", "reset")))
             keyboard.add_hotkey("f2", lambda: self.results.put(("hotkey", "toggle")))
+            keyboard.add_hotkey("f3", lambda: self.results.put(("hotkey", "overlay")))
         except Exception as e:
             self.set_status(f"Hotkeys unavailable: {e}")
+            self.root.bind("<F3>", lambda e: self.toggle_overlay())
 
     def set_status(self, text):
         self.status.set(f"{time.strftime('%H:%M:%S')}  {text}")
@@ -1103,6 +1147,65 @@ class App:
             self.root.deiconify()
         else:
             self.root.withdraw()
+
+    # ---- overlay mode -------------------------------------------------- #
+    def toggle_overlay(self):
+        """Borderless, see-through window with only the stats and progress
+        bar, always on top of the game. F3 / double-click switches back."""
+        root = self.root
+        if not self.overlay:
+            self.overlay = True
+            slaves = root.pack_slaves()
+            keep = slaves[:slaves.index(self.progress) + 1]  # stats + progress bar
+            self._overlay_hidden = [(w, w.pack_info()) for w in slaves if w not in keep]
+            for w, _ in self._overlay_hidden:
+                w.pack_forget()
+            root.withdraw()
+            root.overrideredirect(True)
+            root.attributes("-alpha", self.settings["overlay_opacity"])
+            root.attributes("-topmost", True)
+            root.deiconify()
+        else:
+            self.overlay = False
+            for w, info in self._overlay_hidden:
+                w.pack(**info)
+            self._overlay_hidden = []
+            root.withdraw()
+            root.overrideredirect(False)
+            root.attributes("-alpha", 1.0)
+            root.deiconify()
+            self._apply_on_top()
+        self._fit_height()
+
+    def _set_overlay_opacity(self, value):
+        value = min(1.0, max(MIN_OPACITY, round(value, 2)))
+        self.settings["overlay_opacity"] = value
+        if self.overlay:
+            self.root.attributes("-alpha", value)
+        if self._opacity_save is not None:
+            self.root.after_cancel(self._opacity_save)
+        self._opacity_save = self.root.after(500, self._save_settings_quietly)
+
+    def _save_settings_quietly(self):
+        self._opacity_save = None
+        try:
+            save_settings(self.settings)
+        except OSError as e:
+            self.set_status(f"Couldn't save settings: {e}")
+
+    def _overlay_press(self, event):
+        if self.overlay:
+            self._drag_from = (event.x_root - self.root.winfo_x(),
+                               event.y_root - self.root.winfo_y())
+
+    def _overlay_drag(self, event):
+        if self.overlay and self._drag_from:
+            dx, dy = self._drag_from
+            self.root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+
+    def _overlay_double_click(self, _event):
+        if self.overlay:
+            self.toggle_overlay()
 
     def quit(self):
         self.running = False
@@ -1202,6 +1305,8 @@ class App:
                         self._refresh()
                     elif payload == "toggle":
                         self.toggle_visibility()
+                    elif payload == "overlay":
+                        self.toggle_overlay()
         except queue.Empty:
             pass
         if self.running:

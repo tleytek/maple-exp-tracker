@@ -63,10 +63,14 @@ To build the exe yourself, run **`build.bat`**. It writes
 | Reset | Start a new session |
 | Pause | Stop reading the screen |
 | Always on top | Keep the window above the game |
-| Rows | Tick / untick which stats and region images are shown (saved) |
-| Problem snapshots | Open the folder of saved problem images |
+| Settings | Tick / untick which stats and region images are shown, overlay opacity, and the problem snapshots folder (saved) |
+| Overlay (F3) | Borderless, see-through window with just the stats, on top of the game. Drag to move; F3 or double-click to go back |
 | F1 | Reset the rate |
 | F2 | Hide / show the window |
+| F3 | Overlay mode on / off |
+
+The window is responsive: make it wide and the stats and buttons spread
+out into columns; make it narrow and they stack.
 
 Tips:
 
