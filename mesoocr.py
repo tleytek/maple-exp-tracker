@@ -11,9 +11,8 @@ digit rules, but the approach is the same as ``expocr``:
 3. Short glyphs are ``,`` separators; the rest are classified by shape.
 4. Validate the format (``1,234,567``) before trusting it.
 
-Digits seen in real captures so far: 6, 7, 9. The rules for the others
-follow the same font structure but are unverified until a real capture of
-them passes; an unknown shape is reported as unreadable, not guessed.
+All ten digits have passed on real captures (``tests/meso``). An unknown
+shape (e.g. the cursor over a digit) is reported as unreadable, not guessed.
 """
 import numpy as np
 
@@ -67,7 +66,9 @@ def classify_digit(ink):
         return "7"
     if bottom >= 0.8:
         return "2"
-    upper_left = box(1 / 8, 3 / 8, 0.0, 0.3)
+    # Left side below the top curve: empty on a 3 (its row-2 ink is the end
+    # of the top curve, so start below it), the vertical stroke on a 5.
+    upper_left = box(2 / 8, 6 / 8, 0.0, 0.3)
     upper_right = box(1 / 8, 3 / 8, 0.7, 1.0)
     if upper_left == 0 and upper_right > 0:
         return "3"
