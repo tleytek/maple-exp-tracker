@@ -723,42 +723,42 @@ class App:
         self.potion_previews = {"hp": preview("img_hp", "HP pots:", 0, 0, pots),
                                 "mp": preview("img_mp", "MP pots:", 0, 2, pots)}
 
-        btns = tk.Frame(self.root, bg=self.BG)
-        btns.pack(fill=tk.X, pady=8, **pad)
-        ttk.Button(btns, text="Select EXP", command=self.select_region).pack(side=tk.LEFT)
-        ttk.Button(btns, text="Select Mesos", command=self.select_meso_region,
-                   ).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(btns, text="Reset", command=self.reset).pack(side=tk.LEFT, padx=4)
-        self.pause_btn = ttk.Button(btns, text="Pause", command=self.toggle_pause)
-        self.pause_btn.pack(side=tk.LEFT)
+        # Controls in two equal-width columns, so the window stays narrow:
+        #   Select EXP      | Select Mesos
+        #   Select HP pots  | Select MP pots
+        #   HP pot price    | MP pot price
+        #   Reset           | Pause
+        #   Rows            | Problem snapshots
+        #   [ ] Always on top | [ ] Show log
+        ctl = tk.Frame(self.root, bg=self.BG)
+        ctl.pack(fill=tk.X, pady=8, **pad)
+        ctl.columnconfigure((0, 1), weight=1, uniform="ctl")
 
-        pot_btns = tk.Frame(self.root, bg=self.BG)
-        pot_btns.pack(fill=tk.X, pady=(0, 8), **pad)
+        def place(widget, row, col):
+            widget.grid(row=row, column=col, sticky="ew",
+                        padx=(0, 4) if col == 0 else (4, 0), pady=2)
+
+        place(ttk.Button(ctl, text="Select EXP", command=self.select_region), 0, 0)
+        place(ttk.Button(ctl, text="Select Mesos", command=self.select_meso_region), 0, 1)
         self.price_vars = {}
-        for kind in self.potions:
-            ttk.Button(pot_btns, text=f"Select {kind.upper()} pots",
-                       command=lambda k=kind: self.select_potion_region(k),
-                       ).pack(side=tk.LEFT, padx=(0, 4))
-        for kind in self.potions:
-            tk.Label(pot_btns, text=f"{kind.upper()} pot price", bg=self.BG, fg=self.DIM,
-                     font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(8, 2))
+        for col, kind in enumerate(self.potions):
+            place(ttk.Button(ctl, text=f"Select {kind.upper()} pots",
+                             command=lambda k=kind: self.select_potion_region(k)), 1, col)
+            cell = tk.Frame(ctl, bg=self.BG)
+            tk.Label(cell, text=f"{kind.upper()} pot price", bg=self.BG, fg=self.DIM,
+                     font=("Segoe UI", 9)).pack(side=tk.LEFT)
             var = tk.StringVar(value=f"{self.settings[kind + '_price']:g}")
             var.trace_add("write", lambda *_, k=kind: self._price_changed(k))
             self.price_vars[kind] = var
-            tk.Entry(pot_btns, textvariable=var, width=6, bg="#2a2d34", fg=self.FG,
+            tk.Entry(cell, textvariable=var, width=6, bg="#2a2d34", fg=self.FG,
                      insertbackground=self.FG, relief="flat",
-                     font=("Consolas", 10)).pack(side=tk.LEFT)
+                     font=("Consolas", 10)).pack(side=tk.RIGHT)
+            place(cell, 2, col)
+        place(ttk.Button(ctl, text="Reset", command=self.reset), 3, 0)
+        self.pause_btn = ttk.Button(ctl, text="Pause", command=self.toggle_pause)
+        place(self.pause_btn, 3, 1)
 
-        opts = tk.Frame(self.root, bg=self.BG)
-        opts.pack(fill=tk.X, **pad)
-        self.on_top = tk.BooleanVar(value=True)
-        ttk.Checkbutton(opts, text="Always on top", variable=self.on_top,
-                        command=self._apply_on_top).pack(side=tk.LEFT)
-        self._apply_on_top()
-        self.show_log = tk.BooleanVar(value=False)
-        ttk.Checkbutton(opts, text="Show log", variable=self.show_log,
-                        command=self._toggle_log).pack(side=tk.LEFT, padx=(12, 0))
-        rows_btn = ttk.Menubutton(opts, text="Rows")
+        rows_btn = ttk.Menubutton(ctl, text="Rows")
         rows_menu = tk.Menu(rows_btn, tearoff=0)
         for row in self.row_layout:
             if row is None:
@@ -774,9 +774,16 @@ class App:
         rows_menu.add_separator()
         rows_menu.add_command(label="Show all", command=self._show_all_rows)
         rows_btn["menu"] = rows_menu
-        rows_btn.pack(side=tk.LEFT, padx=(12, 0))
-        ttk.Button(opts, text="Problem snapshots", command=self.open_problems_folder,
-                   ).pack(side=tk.LEFT, padx=(8, 0))
+        place(rows_btn, 4, 0)
+        place(ttk.Button(ctl, text="Problem snapshots", command=self.open_problems_folder), 4, 1)
+
+        self.on_top = tk.BooleanVar(value=True)
+        place(ttk.Checkbutton(ctl, text="Always on top", variable=self.on_top,
+                              command=self._apply_on_top), 5, 0)
+        self._apply_on_top()
+        self.show_log = tk.BooleanVar(value=False)
+        place(ttk.Checkbutton(ctl, text="Show log", variable=self.show_log,
+                              command=self._toggle_log), 5, 1)
 
         self.status = tk.StringVar(value="Starting…")
         tk.Label(self.root, textvariable=self.status, bg=self.BG, fg=self.DIM,
