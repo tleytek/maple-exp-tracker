@@ -24,7 +24,7 @@ import numpy as np
 from expocr import _components, _segments
 
 GLYPH_H = 9
-MAX_STACK = 100  # potions per slot; anything bigger isn't a potion stack
+MAX_STACK = 300  # potions per slot (live stacks of 161 seen); bigger is ammo etc.
 MAX_SCALE = 4
 MAX_ERRORS = 3   # stray / missing pixels tolerated when matching a digit
 MIN_GLYPH_PIXELS = 5  # fewer lit pixels than this is a stray icon pixel ("1" has 10)
@@ -46,12 +46,17 @@ FONT = {d: np.array([[c == "#" for c in r] for r in rows], bool) for d, rows in 
 
 
 def _aligned(changes, s):
-    """Offset at which (almost) every colour change falls on a multiple of s."""
+    """Offset at which (almost) every colour change falls on a multiple of s.
+
+    Not every change: a slot region's edges can catch a little of the game
+    world or a frame that isn't on the HUD's pixel grid (seen on live
+    quickslot captures: ~1.5% of changes off-grid). Off by one scale step,
+    changes split over 2+ offsets, so 90% still picks the right scale."""
     if len(changes) == 0:
         return None
     counts = np.bincount(changes % s, minlength=s)
     off = int(counts.argmax())
-    return off if counts[off] >= 0.99 * len(changes) else None
+    return off if counts[off] >= 0.9 * len(changes) else None
 
 
 def _unscale(rgb):

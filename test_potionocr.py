@@ -75,6 +75,13 @@ def main():
     check("empty slot", potionocr.read(crop(slots(2, 2))), None, "no stack counts")
     check("nothing", potionocr.read(np.zeros((60, 60, 3), np.uint8)), None, "no stack counts")
 
+    # 5. live quickslot captures (2x): a stack over 100, and slots whose
+    #    edges catch a few off-grid pixels (must still unscale)
+    for f, want in (("quick_161.png", 161), ("quick_49_offgrid.png", 49),
+                    ("quick_51_offgrid.png", 51)):
+        img = np.array(Image.open(os.path.join(HERE, "tests", "potions", f)).convert("RGB"))
+        check(f"capture {f}", potionocr.read(img), want)
+
     print("ALL PASS" if not failures else f"{failures} FAILURE(S)")
     return 1 if failures else 0
 
