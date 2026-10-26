@@ -10,7 +10,8 @@ level 45, EXP 216,944 = 46.31 %, MP 631/1208, max HP 1464):
         u16 ap, u16 ?, u32 ?, u64 exp ...   (offsets from the name below)
         Use items further on: u16 slot, u8 2, u32 item id, u8 cash, u64 expiry,
         u32 -1, u8 ?, u16 quantity
-  0x07E stat update: u8 ?, u8 item reaction, u8 ?, u32 mask, values in flag order:
+  0x07E stat update: u8 item reaction (1 right after using an item), u8 ?, u8 ?,
+        u32 mask, values in flag order:
         HP 0x400 u32, MP 0x1000 u32, EXP 0x10000 u64, mesos 0x40000 u64
   0x072 inventory ops: u8 ?, u8 ?, u8 count, u32 ?, then per op u8 mode, u8 tab, u16 slot:
         mode 1 = new quantity (u16), 2 = moved to slot (u16), 3 = removed,
@@ -75,10 +76,20 @@ class PlayerState:
     """Feed decoded packets; keeps the latest values and returns change events.
 
     Events: ('exp', old, new, level), ('level', old, new), ('meso', old, new),
-            ('use', item id, old total, new total)
+            ('use', item id, old total, new total),
+            ('pot_kind', item id, 'hp' | 'mp', total before the use) the first time a
+            used item turns out to heal HP or MP (the item-reaction stat update that
+            follows a use says which).
+
+    to_next(level) -> EXP for a full bar; with it, an EXP drop of more than 30 % of
+    the bar between char info packets is taken as a level-up (the level-up stat
+    packet itself has flags whose sizes aren't known yet).
     """
 
-    def __init__(self):
+    def __init__(self, to_next=None, item_kind=None):
+        self.to_next = to_next
+        self.item_kind = dict(item_kind or {})  # item id -> 'hp' / 'mp'
+        self._pending_use = {}  # item id -> total before the latest use
         self.char_id = None
         self.name = None
         self.level = None
@@ -152,7 +163,19 @@ class PlayerState:
             self.mp = vals[F_MP]
         if F_MAXMP in vals:
             self.max_mp = vals[F_MAXMP]
+        if b[2] == 1 and self._pending_use:  # stat change caused by the item just used
+            kind = "hp" if F_HP in vals else "mp" if F_MP in vals else None
+            if kind:
+                for iid, before in self._pending_use.items():
+                    if iid not in self.item_kind:
+                        self.item_kind[iid] = kind
+                        ev.append(("pot_kind", iid, kind, before))
+            self._pending_use = {}
         if F_EXP in vals:
+            full = self.to_next(self.level) if self.to_next and self.level else None
+            if self.exp is not None and full and self.exp - vals[F_EXP] > 0.3 * full:
+                ev.append(("level", self.level, self.level + 1))
+                self.level += 1
             if self.exp is not None and vals[F_EXP] != self.exp:
                 ev.append(("exp", self.exp, vals[F_EXP], self.level))
             self.exp = vals[F_EXP]
@@ -194,7 +217,13 @@ class PlayerState:
                 break  # record length varies; stop reading further ops
             else:
                 break
-        return self._use_events(before) if self.use_known else []
+        if not self.use_known:
+            return []
+        ev = self._use_events(before)
+        used = {e[1]: e[2] for e in ev if e[3] < e[2]}
+        if used:
+            self._pending_use = used
+        return ev
 
     def _use_events(self, before):
         after = self.totals()
