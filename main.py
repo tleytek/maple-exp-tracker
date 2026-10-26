@@ -626,6 +626,11 @@ def fmt_minutes(m):
 
 
 class App:
+    TITLE = "Maple EXP Tracker"
+    # False in the packet tracker (MaplePacketTracker): no screen regions to select,
+    # no preview images, values come from the network instead of OCR.
+    USES_REGIONS = True
+    EXTRA_SECTION = "Preview images"  # Settings section for self.image_rows
     BG = "#15171c"
     FG = "#e6e6e6"
     ACCENT = "#7CFC00"
@@ -633,7 +638,7 @@ class App:
 
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Maple EXP Tracker")
+        self.root.title(self.TITLE)
         # Meso coin icon for the title bar and taskbar (bundled into the exe;
         # next to main.py when run from source)
         icon = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__))),
@@ -672,7 +677,7 @@ class App:
         self.root.after(100, self._poll)
         self.root.after(1000, self._tick)
 
-        if not self.region:
+        if self.USES_REGIONS and not self.region:
             self.set_status("No region set — click “Select EXP”.")
 
     # ---- UI ------------------------------------------------------------- #
@@ -691,7 +696,39 @@ class App:
         stats.pack(fill=tk.X, pady=(10, 4), **pad)
 
         self.vars = {}
-        rows = [
+        rows = self._row_layout()
+        self.row_layout = rows
+        self.row_widgets = {}
+        self.row_shown = {}
+        self.stats_frame = stats
+        self.stat_cells = []  # (key, name label, value label), in display order
+        for row in rows:
+            if row is None:
+                continue
+            key, label = row
+            name = tk.Label(stats, text=label, bg=self.BG, fg=self.DIM, font=("Segoe UI", 10))
+            var = tk.StringVar(value="—")
+            self.vars[key] = var
+            big = key in self.BIG_ROWS
+            value = tk.Label(stats, textvariable=var, bg=self.BG,
+                             fg=self.ACCENT if big else self.FG,
+                             font=("Consolas", 14 if big else 12, "bold" if big else "normal"))
+            self.stat_cells.append((key, name, value))
+            self._add_hideable(key, (name, value))
+
+        self.progress = ttk.Progressbar(self.root, maximum=100, style="Exp.Horizontal.TProgressbar")
+        self.progress.pack(fill=tk.X, pady=(2, 8), **pad)
+
+        if self.USES_REGIONS:
+            self._build_previews(pad)
+        else:
+            self._build_extra(pad)
+        self._build_controls(pad)
+
+    BIG_ROWS = ("exp", "rate_min", "mesos", "meso_rate", "net_rate")
+
+    def _row_layout(self):
+        return [
             ("exp", "EXP"),
             ("percent", "Progress"),
             ("rate_min", "EXP / 1 min"),
@@ -719,28 +756,13 @@ class App:
             None,
             ("session", "Session"),
         ]  # None = section break in Settings
-        self.row_layout = rows
-        self.row_widgets = {}
-        self.row_shown = {}
-        self.stats_frame = stats
-        self.stat_cells = []  # (key, name label, value label), in display order
-        for row in rows:
-            if row is None:
-                continue
-            key, label = row
-            name = tk.Label(stats, text=label, bg=self.BG, fg=self.DIM, font=("Segoe UI", 10))
-            var = tk.StringVar(value="—")
-            self.vars[key] = var
-            big = key in ("exp", "rate_min", "mesos", "meso_rate", "net_rate")
-            value = tk.Label(stats, textvariable=var, bg=self.BG,
-                             fg=self.ACCENT if big else self.FG,
-                             font=("Consolas", 14 if big else 12, "bold" if big else "normal"))
-            self.stat_cells.append((key, name, value))
-            self._add_hideable(key, (name, value))
 
-        self.progress = ttk.Progressbar(self.root, maximum=100, style="Exp.Horizontal.TProgressbar")
-        self.progress.pack(fill=tk.X, pady=(2, 8), **pad)
+    def _build_extra(self, pad):
+        """Packet tracker hook: widgets shown under the progress bar instead of previews."""
+        self.image_rows = []
+        self.preview_frames = ()
 
+    def _build_previews(self, pad):
         # Previews of what each region sees, on a grid so each one can be
         # hidden and shown again in place (Settings).
         previews = tk.Frame(self.root, bg=self.BG)
@@ -768,6 +790,7 @@ class App:
         self.potion_previews = {"hp": preview("img_hp", "HP pots:", 0, 0, pots),
                                 "mp": preview("img_mp", "MP pots:", 0, 2, pots)}
 
+    def _build_controls(self, pad):
         # Controls in equal-width columns: two when the window is narrow,
         # four or six when it's wide (see _relayout). In order:
         #   Select EXP      | Select Mesos
@@ -783,12 +806,14 @@ class App:
         def place(widget, row, col):  # (row, col) in the two-column layout
             self.ctl_cells.append((row, col, widget))
 
-        place(ttk.Button(ctl, text="Select EXP", command=self.select_region), 0, 0)
-        place(ttk.Button(ctl, text="Select Mesos", command=self.select_meso_region), 0, 1)
+        if self.USES_REGIONS:
+            place(ttk.Button(ctl, text="Select EXP", command=self.select_region), 0, 0)
+            place(ttk.Button(ctl, text="Select Mesos", command=self.select_meso_region), 0, 1)
         self.price_vars = {}
         for col, kind in enumerate(self.potions):
-            place(ttk.Button(ctl, text=f"Select {kind.upper()} pots",
-                             command=lambda k=kind: self.select_potion_region(k)), 1, col)
+            if self.USES_REGIONS:
+                place(ttk.Button(ctl, text=f"Select {kind.upper()} pots",
+                                 command=lambda k=kind: self.select_potion_region(k)), 1, col)
             cell = tk.Frame(ctl, bg=self.BG)
             tk.Label(cell, text=f"{kind.upper()} pot price", bg=self.BG, fg=self.DIM,
                      font=("Segoe UI", 9)).pack(side=tk.LEFT)
@@ -996,7 +1021,8 @@ class App:
                 current.append(row)
         sections.append(current)
         sections = list(zip(self.SECTION_TITLES, sections))
-        sections.append(("Preview images", self.image_rows))
+        if self.image_rows:
+            sections.append((self.EXTRA_SECTION, self.image_rows))
         for i, (title, rows) in enumerate(sections):
             box = tk.Frame(body, bg=self.BG)
             box.grid(row=1 + i // 2, column=i % 2, sticky="nw", padx=(0, 18), pady=(0, 10))
@@ -1394,6 +1420,8 @@ class App:
             self.set_status(f"Couldn't open {PROBLEMS_DIR}: {e}")
 
     def _show_preview(self, img):
+        if img is None:  # packet tracker: no image
+            return
         self.preview_photo = self._preview_image(img)
         self.preview.config(image=self.preview_photo, text="")
 
@@ -1421,8 +1449,9 @@ class App:
         if msg:
             self.set_status(msg)
             self.log(msg)
-        self.meso_preview_photo = self._preview_image(img)
-        self.meso_preview.config(image=self.meso_preview_photo, text="")
+        if img is not None:
+            self.meso_preview_photo = self._preview_image(img)
+            self.meso_preview.config(image=self.meso_preview_photo, text="")
         self._refresh()
 
     def _on_potion(self, kind, now, total, how, img):
@@ -1455,8 +1484,9 @@ class App:
         if msg:
             self.set_status(msg)
             self.log(msg)
-        self.potion_preview_photos[kind] = self._preview_image(img, max_w=140)
-        self.potion_previews[kind].config(image=self.potion_preview_photos[kind], text="")
+        if img is not None:
+            self.potion_preview_photos[kind] = self._preview_image(img, max_w=140)
+            self.potion_previews[kind].config(image=self.potion_preview_photos[kind], text="")
         self._refresh()
 
     def _potion_cost(self, used_hp, used_mp):
