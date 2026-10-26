@@ -124,6 +124,56 @@ def find_game_iface():
     return (name, None) if name else (None, f"no adapter found holding {ip}")
 
 
+# ---- EXP ------------------------------------------------------------------ #
+class PacketExpTracker(main.RateTracker):
+    """EXP from packets: the values are exact, so no OCR cross-checks. Gains count
+    from the first EXP packet whether or not the level is known yet; the level
+    (self.full = EXP for a full bar) is only needed for %, the bar and time to level.
+    """
+
+    def reset_session(self):
+        super().reset_session()
+        self.full = None  # set by the app before each reading, None = level unknown
+        self._prev_full = None
+
+    @property
+    def estimated_max(self):
+        return self.full
+
+    def feed(self, now, current, percent):
+        self.last_seen = now
+        if current is None:
+            return None
+        msg = None
+        if self.prev is None:
+            self.change_log.append((now, current))
+        elif current != self.prev:
+            if current > self.prev:
+                self.session_gained += current - self.prev
+            else:
+                full_then = self._prev_full
+                if full_then:
+                    level_up = self.prev - current > 0.3 * full_then
+                else:
+                    level_up = current < 0.5 * self.prev
+                self.change_log.clear()
+                if level_up:
+                    self.levels += 1
+                    # rest of the old bar (unknown without the level) + the new EXP
+                    self.session_gained += max(0, (full_then or self.prev) - self.prev) + current
+                    msg = f"Level up! ({self.prev:,} → {current:,})"
+                else:
+                    msg = f"EXP dropped {self.prev:,} → {current:,} — rate restarted"
+            self.change_log.append((now, current))
+            self.rate = self._calculate_rate()
+            self.gain_log.append((now, self.session_gained))
+            self._prune_gain_log(now)
+        self.prev = self.current = current
+        self.percent = percent
+        self._prev_full = self.full
+        return msg
+
+
 # ---- kills ---------------------------------------------------------------- #
 class KillTracker(main.RollingGains):
     """Kills this session, with the same rolling windows / session average as EXP."""
@@ -242,11 +292,15 @@ class PacketApp(main.App):
         self.packet_events = queue.Queue()
         self.capture = None
         self._asked_channel = False
+        self._session_started = False  # the clock starts at the first kill / EXP gain
         super().__init__()
         self.capture = Capture(self.packet_events, self.extras["iface"], self.pot_kind,
                                self.extras["characters"])
         self.set_status("Starting packet capture…")
         self.root.after(int(main.POLL_RATE * 1000), self._feed_tick)
+
+    def _make_exp_tracker(self):
+        return PacketExpTracker()
 
     def _row_layout(self):
         rows = super()._row_layout()
@@ -299,6 +353,12 @@ class PacketApp(main.App):
         super()._poll()
 
     def _on_state(self, ev):
+        if ev[0] == "exp":
+            if self.tracker.current is None and not self.paused:
+                # baseline from the EXP before this change, so the first gain counts
+                self.tracker.feed(time.time(), ev[1], None)
+            if ev[2] > ev[1]:
+                self._start_session("first EXP gain")
         if ev[0] == "level":
             self.log(f"level {ev[1]} → {ev[2]}")
             self._remember_character()
@@ -328,9 +388,10 @@ class PacketApp(main.App):
         st = self.capture.state if self.capture else None
         if st and not self.paused:
             now = time.time()
-            full = to_next(st.level)
-            if st.exp is not None and full:
-                pct = int(st.exp * 10000 / full) / 100  # game truncates to 2 decimals
+            if st.exp is not None:
+                full = to_next(st.level)
+                pct = int(st.exp * 10000 / full) / 100 if full else None  # truncated, like the game
+                self.tracker.full = full
                 self.results.put(("reading", (now, st.exp, pct, "packets", None)))
             if st.mesos is not None:
                 self.results.put(("meso", (now, st.mesos, "packets", None)))
@@ -365,10 +426,23 @@ class PacketApp(main.App):
     # ---- kills ----
     def _on_kill(self, ev):
         mob = ev["mob"]
+        if self.paused:
+            return
+        self._start_session("first kill")
         if not self.kill_tracker.add(time.time(), mob):
             return
         self.log(f"kill #{self.kill_tracker.current}: {self._mob_label(mob)}")
         self._refresh()
+
+    def _start_session(self, why):
+        """Time before the first kill or EXP gain (your own or a party member's kill)
+        isn't session time: start every tracker's clock then."""
+        if self._session_started or self.paused:
+            return
+        self._session_started = True
+        for t in self._trackers():
+            t._start_clock()
+        self.log(f"{why}: session clock started")
 
     def _mob_label(self, mob):
         if mob is None:
@@ -406,6 +480,7 @@ class PacketApp(main.App):
         return super()._trackers() + [self.kill_tracker]
 
     def reset(self):
+        self._session_started = False
         self.kill_tracker.reset_session()
         for w in self.mob_frame.grid_slaves():
             w.destroy()
@@ -415,15 +490,13 @@ class PacketApp(main.App):
 
     def _refresh(self):
         super()._refresh()
-        st = self.capture.state if self.capture else None
-        if st and st.exp is not None and self.tracker.current is None:
-            # EXP is known but the level isn't yet (needed for %, rates, time to level)
-            self.vars["exp"].set(f"{st.exp:,}")
+        if self.tracker.current is not None and self.tracker.full is None:
+            # EXP counts already; only % / time to level wait for the level
             self.vars["percent"].set("change ch.")
             if not self._asked_channel:
                 self._asked_channel = True
-                self.set_status("Change channel (or map) once so the game sends your level: "
-                                "EXP %, rates and potions start then. Only needed the first time.")
+                self.set_status("EXP is counting. For EXP % and time to level, change channel "
+                                "(or map) once so the game sends your level; it's remembered after that.")
         k = self.kill_tracker
         self.vars["kills"].set(f"{k.current:,}")
         now = time.time()

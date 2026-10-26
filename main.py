@@ -651,7 +651,7 @@ class App:
         self.root.minsize(300, 150)
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
 
-        self.tracker = RateTracker()
+        self.tracker = self._make_exp_tracker()
         self.meso = MesoTracker()
         self.potions = {"hp": PotionTracker("HP"), "mp": PotionTracker("MP")}
         self.region = load_region()
@@ -679,6 +679,9 @@ class App:
 
         if self.USES_REGIONS and not self.region:
             self.set_status("No region set — click “Select EXP”.")
+
+    def _make_exp_tracker(self):
+        return RateTracker()
 
     # ---- UI ------------------------------------------------------------- #
     def _build_ui(self):
@@ -1350,7 +1353,8 @@ class App:
                                 got = self.tracker.gained_in(now, w)
                                 if got:
                                     parts.append(f"{name} +{got[0]:,}")
-                            self.log(f"read {current:,} [{percent:.2f}%]"
+                            shown = f"{percent:.2f}%" if percent is not None else "level unknown"
+                            self.log(f"read {current:,} [{shown}]"
                                      + "".join(f"  {p}" for p in parts)
                                      + (f"  avg {rate:,.0f}/min" if rate else ""))
                         elif (current, percent) != after:
