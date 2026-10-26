@@ -98,12 +98,44 @@ class PlayerState:
         self.mesos = None
         self.hp = self.max_hp = self.mp = self.max_mp = None
         self.use = {}  # Use tab slot -> [item id, quantity]
-        self.use_known = False  # Use tab loaded from a char info packet
+        self.use_known = False  # Use tab loaded (from char info, or remembered)
+        self.restored = False  # level / Use tab remembered from an earlier session
+        self.stale_slots = set()  # remembered Use slots not yet confirmed by the game
+
+    def snapshot(self):
+        """What to remember about this character between sessions (None if unknown)."""
+        if self.char_id is None or self.level is None:
+            return None
+        return {"name": self.name, "level": self.level, "exp": self.exp,
+                "use": [[s, iid, q] for s, (iid, q) in sorted(self.use.items())]}
+
+    def restore(self, char_id, snap):
+        """Use a remembered level and Use tab until the next char info packet. The
+        level is only taken while the current EXP still fits in it (a level-up since
+        then shows as EXP past the bar)."""
+        if self.level is not None or not snap:
+            return False
+        level = snap.get("level")
+        full = self.to_next(level) if self.to_next else None
+        if not isinstance(level, int) or (self.exp is not None and full and self.exp >= full):
+            return False
+        self.char_id = char_id
+        self.name = snap.get("name")
+        self.level = level
+        if not self.use_known:
+            self.use = {s: [iid, q] for s, iid, q in snap.get("use", [])}
+            self.stale_slots = set(self.use)  # counts may have changed since
+            self.use_known = True
+        self.restored = True
+        return True
 
     def totals(self):
+        """Item id -> count in the Use tab, leaving out remembered stacks the game
+        hasn't confirmed yet (a confirmed stack then shows as a restock, never as use)."""
         t = {}
-        for iid, q in self.use.values():
-            t[iid] = t.get(iid, 0) + q
+        for slot, (iid, q) in self.use.items():
+            if slot not in self.stale_slots:
+                t[iid] = t.get(iid, 0) + q
         return t
 
     def feed(self, p):
@@ -119,11 +151,12 @@ class PlayerState:
         return []
 
     def _char_info(self, b):
-        n = find_char(b, self.char_id)
+        n = find_char(b, None if self.restored else self.char_id)
         if n is None:
             return []
         ev = []
         self.char_id = _u32(b, n - 12)
+        was_restored, self.restored = self.restored, False
         self.name = b[n:n + NAME_LEN].split(b"\0", 1)[0].decode("ascii", "replace")
         level = _u32(b, n + LEVEL_AT)
         if self.level is not None and level != self.level:
@@ -137,7 +170,8 @@ class PlayerState:
         self.exp = exp
         before = self.totals()
         self.use = {s: [iid, q] for s, (iid, q) in use_items(b, n + EXP_AT).items()}
-        if self.use_known:
+        self.stale_slots = set()
+        if self.use_known and not was_restored:  # remembered counts may be stale
             ev += self._use_events(before)
         self.use_known = True
         return ev
@@ -165,7 +199,7 @@ class PlayerState:
             self.max_mp = vals[F_MAXMP]
         if b[2] == 1 and self._pending_use:  # stat change caused by the item just used
             kind = "hp" if F_HP in vals else "mp" if F_MP in vals else None
-            if kind:
+            if kind and not self.restored:  # a remembered slot may hold another item now
                 for iid, before in self._pending_use.items():
                     if iid not in self.item_kind:
                         self.item_kind[iid] = kind
@@ -199,21 +233,30 @@ class PlayerState:
                 i += 2
                 if tab == USE_TAB and slot in self.use:
                     self.use[slot][1] = q
+                    self.stale_slots.discard(slot)
             elif mode == 2:  # move / swap
                 dst = _u16(b, i)
                 i += 2
                 if tab == USE_TAB:
                     a, c = self.use.pop(slot, None), self.use.pop(dst, None)
+                    sa, sc = slot in self.stale_slots, dst in self.stale_slots
+                    self.stale_slots -= {slot, dst}
                     if a:
                         self.use[dst] = a
+                        if sa:
+                            self.stale_slots.add(dst)
                     if c:
                         self.use[slot] = c
+                        if sc:
+                            self.stale_slots.add(slot)
             elif mode == 3:  # removed
                 if tab == USE_TAB:
                     self.use.pop(slot, None)
+                    self.stale_slots.discard(slot)
             elif mode == 0:  # added: item record follows (type byte, then id)
                 if tab == USE_TAB and i + 21 <= len(b) and b[i] == 2:
                     self.use[slot] = [_u32(b, i + 1), _u16(b, i + 19)]
+                    self.stale_slots.discard(slot)
                 break  # record length varies; stop reading further ops
             else:
                 break

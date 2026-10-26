@@ -86,6 +86,34 @@ def main():
     ev = s.feed(stat(0x400, (0x400, 600), reaction=0))
     fails += check("no heal -> not a potion", 2030000 not in s.item_kind, s.item_kind)
 
+    # 6. Remembered character: level + Use tab work before any char info packet.
+    snap = s.snapshot()
+    fails += check("snapshot has level and Use tab", snap["level"] == 46 and snap["use"], snap["level"])
+    r = PlayerState(exptable.to_next)
+    r.feed(stat(0x10000, (0x10000, 5000)))
+    fails += check("restore while EXP fits the level", r.restore(s.char_id, snap) and r.level == 46)
+    fails += check("restored Use tab", r.use_known and r.use == s.use)
+    # remembered stacks are untrusted: a stale one updated by the game is not "used"
+    r.use[29] = [HP_POT, 72]
+    ev = r.feed(inv(struct.pack("<BBHH", 1, 2, 29, 10)))  # really 10 left now
+    fails += check("stale remembered stack: update isn't potion use",
+                   not [e for e in ev if e[0] == "use" and e[3] < e[2]], ev)
+    ev = r.feed(inv(struct.pack("<BBHH", 1, 2, 29, 9)))  # then one drunk
+    fails += check("confirmed stack: next drop is use", ev == [("use", HP_POT, 10, 9)], ev)
+    r2 = PlayerState(exptable.to_next)
+    r2.feed(stat(0x10000, (0x10000, exptable.to_next(46) + 5)))
+    fails += check("no restore when EXP is past that level's bar", not r2.restore(s.char_id, snap))
+    # a real char info afterwards replaces it without counting stale stacks as used
+    r.use[29] = [HP_POT, 500]
+    ev = []
+    for line in open(FIXTURE):
+        b = bytes.fromhex(json.loads(line)["hex"])
+        if b[:2] == b"\xa9\x01":
+            ev = r.feed(b)
+            break
+    fails += check("char info after restore: real level, no fake potion use",
+                   r.level == 45 and not r.restored and not [e for e in ev if e[0] == "use"], ev)
+
     print("ALL OK" if not fails else f"{fails} FAILED")
     return 1 if fails else 0
 

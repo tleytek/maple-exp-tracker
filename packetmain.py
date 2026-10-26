@@ -46,7 +46,9 @@ def extras_file():
 
 
 def load_extras():
-    extras = {"mob_names": {}, "potion_items": {}, "iface": ""}
+    # characters: char id -> level / EXP / Use tab last seen, so EXP and potions work
+    # on the next launch before the game resends the character info
+    extras = {"mob_names": {}, "potion_items": {}, "iface": "", "characters": {}}
     try:
         with open(extras_file(), encoding="utf-8") as f:
             saved = json.load(f)
@@ -151,9 +153,10 @@ class KillTracker(main.RollingGains):
 class Capture:
     """Background thread: tshark -> decoder -> PlayerState / KillCounter -> UI queue."""
 
-    def __init__(self, out, iface_setting, item_kind):
+    def __init__(self, out, iface_setting, item_kind, characters=None):
         self.out = out
         self.iface_setting = iface_setting
+        self.characters = dict(characters or {})  # remembered characters (read-only copy)
         self.state = PlayerState(to_next, item_kind)
         self.kills = KillCounter()
         self.proc = None
@@ -165,6 +168,25 @@ class Capture:
         self.stop_flag.set()
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
+
+    def handle(self, ts, p):
+        """One decoded server packet -> UI events."""
+        put = self.out.put
+        st = self.state
+        had_char, was_restored = st.char_id, st.restored
+        for ev in st.feed(p):
+            put(("state", ev))
+        if st.char_id and (st.char_id != had_char or was_restored and not st.restored):
+            put(("char", (st.name, st.level, was_restored)))
+            self.kills.self_id = st.char_id
+        kill = self.kills.feed(ts, p)
+        if kill:
+            put(("kill", kill))
+        # Our id is known from the first kill; pick up the level remembered for it
+        if st.level is None and st.exp is not None and self.kills.self_id:
+            snap = self.characters.get(str(self.kills.self_id))
+            if st.restore(self.kills.self_id, snap):
+                put(("restored", (st.name, st.level)))
 
     def _run(self):
         put = self.out.put
@@ -180,8 +202,7 @@ class Capture:
                     put(("status", f"Waiting: {why}. Retrying every 5 s."))
                     self.stop_flag.wait(5)
                     continue
-            put(("status", f"Watching {iface}. EXP/mesos fill in on the next kill or pickup; "
-                 "change channel once to load your level and potions."))
+            put(("status", f"Watching {iface}. Stats fill in on the next kill or pickup."))
             put(("log", f"capturing on {iface}"))
             started = time.time()
             try:
@@ -191,15 +212,7 @@ class Capture:
                 return
             for ts, _key, p in maplepackets.decode_lines(self.proc.stdout,
                                                          log=lambda m: put(("log", m))):
-                had_char = self.state.char_id
-                for ev in self.state.feed(p):
-                    put(("state", ev))
-                if self.state.char_id and self.state.char_id != had_char:
-                    put(("char", (self.state.name, self.state.level)))
-                    self.kills.self_id = self.state.char_id
-                kill = self.kills.feed(ts, p)
-                if kill:
-                    put(("kill", kill))
+                self.handle(ts, p)
             if self.stop_flag.is_set():
                 return
             err = (self.proc.stderr.read() or "").strip().splitlines()
@@ -228,8 +241,10 @@ class PacketApp(main.App):
         self.pot_kind = {int(k): v for k, v in self.extras["potion_items"].items()}
         self.packet_events = queue.Queue()
         self.capture = None
+        self._asked_channel = False
         super().__init__()
-        self.capture = Capture(self.packet_events, self.extras["iface"], self.pot_kind)
+        self.capture = Capture(self.packet_events, self.extras["iface"], self.pot_kind,
+                               self.extras["characters"])
         self.set_status("Starting packet capture…")
         self.root.after(int(main.POLL_RATE * 1000), self._feed_tick)
 
@@ -265,9 +280,16 @@ class PacketApp(main.App):
                 elif kind == "log":
                     self.log(val)
                 elif kind == "char":
-                    name, level = val
+                    name, level, was_restored = val
                     self.set_status(f"Tracking {name} (Lv {level}) from packets.")
                     self.log(f"character {name}, level {level}")
+                    if was_restored:
+                        self._rebase_potions()
+                    self._remember_character()
+                elif kind == "restored":
+                    name, level = val
+                    self.set_status(f"Tracking {name} (Lv {level}, remembered) from packets.")
+                    self.log(f"remembered {name}: level {level} (updates on the next channel change)")
                 elif kind == "kill":
                     self._on_kill(val)
                 elif kind == "state":
@@ -279,6 +301,7 @@ class PacketApp(main.App):
     def _on_state(self, ev):
         if ev[0] == "level":
             self.log(f"level {ev[1]} → {ev[2]}")
+            self._remember_character()
         elif ev[0] == "pot_kind":
             _, iid, kind, before = ev
             self.pot_kind[iid] = kind
@@ -319,6 +342,25 @@ class PacketApp(main.App):
                         self._on_potion(kind, now, sum(totals.get(i, 0) for i in items),
                                         "packets", None)
         self.root.after(int(main.POLL_RATE * 1000), self._feed_tick)
+
+    def _remember_character(self):
+        snap = self.capture.state.snapshot() if self.capture else None
+        if snap:
+            self.extras["characters"][str(self.capture.state.char_id)] = snap
+            try:
+                save_extras(self.extras)
+            except OSError as e:
+                self.set_status(f"Couldn't save character: {e}")
+
+    def _rebase_potions(self):
+        """The real Use tab replaced a remembered one: take its counts as the new
+        baseline instead of counting the difference as potions used."""
+        totals = self.capture.state.totals()
+        for kind, t in self.potions.items():
+            items = [i for i, k in self.pot_kind.items() if k == kind]
+            if items and t.current is not None:
+                t.current = sum(totals.get(i, 0) for i in items)
+                t.pending, t.pending_count = None, 0
 
     # ---- kills ----
     def _on_kill(self, ev):
@@ -373,6 +415,15 @@ class PacketApp(main.App):
 
     def _refresh(self):
         super()._refresh()
+        st = self.capture.state if self.capture else None
+        if st and st.exp is not None and self.tracker.current is None:
+            # EXP is known but the level isn't yet (needed for %, rates, time to level)
+            self.vars["exp"].set(f"{st.exp:,}")
+            self.vars["percent"].set("change ch.")
+            if not self._asked_channel:
+                self._asked_channel = True
+                self.set_status("Change channel (or map) once so the game sends your level: "
+                                "EXP %, rates and potions start then. Only needed the first time.")
         k = self.kill_tracker
         self.vars["kills"].set(f"{k.current:,}")
         now = time.time()
@@ -400,6 +451,7 @@ class PacketApp(main.App):
     def quit(self):
         if self.capture:
             self.capture.stop()
+            self._remember_character()
         super().quit()
 
 
