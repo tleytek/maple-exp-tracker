@@ -510,7 +510,7 @@ class PacketApp(main.App):
         super()._refresh_recent()
         now = time.time()
         k = self.kill_tracker
-        avg = k.session_rate(now)
+        avg = k.session_rate(now) if self._session_started else None
         self.vars["kill_rate"].set("—" if avg is None else f"{avg:,.1f}")
         for w, times in self.AVERAGE_MULTIPLIERS.items():
             self.vars[f"kill_{w}"].set("—" if avg is None else f"{int(round(avg * times)):,}")
@@ -520,6 +520,8 @@ class PacketApp(main.App):
         super()._tick()
         if self.running:
             self._refresh()  # per-mob /h keeps updating between kills
+            if not self._session_started:
+                self.vars["session"].set("starts at first kill")
 
     def quit(self):
         if self.capture:
