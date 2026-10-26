@@ -130,6 +130,29 @@ Run the tests with:
 .venv\Scripts\python.exe test_potionocr.py
 .venv\Scripts\python.exe test_problemlog.py
 .venv\Scripts\python.exe test_tracker.py
+.venv\Scripts\python.exe test_killparse.py
+.venv\Scripts\python.exe test_statparse.py
 ```
 
 Real captures named `<exp>_<percent>[_note].png` in `tests/` are checked too.
+
+## Maple Packet Tracker (second exe)
+
+`MaplePacketTracker.exe` (`packetmain.py`) shows the same stats plus **kills**
+(total, per minute/hour, rolling, and per mob; type a name over "Mob #N" to
+label it), but reads everything from the game's network packets instead of the
+screen, so there are no regions to select. It needs
+[Wireshark](https://www.wireshark.org/) (with Npcap) installed and finds the
+game's network adapter by itself.
+
+- It only watches packets; nothing is sent to the game. Packet sniffing is
+  still against the game's terms of service, so it is a separate exe and the
+  risk is yours.
+- Level and potions load when the game sends your character info: change
+  channel (or map) once after starting it. EXP/mesos/kills start on the next
+  kill or pickup. HP/MP potions are recognised automatically the first time
+  you drink one (by which bar it fills).
+- Settings live in `%APPDATA%\MaplePacketTracker` (potion prices are copied
+  from the OCR tracker on first run).
+- Protocol notes: `maplepackets.py` (decoder), `killparse.py`, `statparse.py`.
+  Opcodes can change when the game is patched.
