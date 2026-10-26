@@ -66,6 +66,19 @@ def main():
     e = k.feed(2, pkt(0x44D, u32(7), u32(ME), u32(1)))
     fails += check("spawn variant mob type", e and e["mob"] == 20, e)
 
+    # 6. Session stats: rates use session time, paused time and paused kills don't count.
+    from killmain import KillStats
+    s = KillStats(now=0)
+    for t in range(0, 120, 10):  # 12 kills in 2 min
+        s.add(t, 30)
+    fails += check("6 kills/min", abs(s.per_minute(120) - 6) < 1e-9, s.per_minute(120))
+    s.pause(120)
+    fails += check("kill while paused ignored", not s.add(150, 30) and s.total == 12)
+    s.resume(180)
+    fails += check("paused minute not session time", s.session_seconds(240) == 180, s.session_seconds(240))
+    fails += check("per-mob rate", abs(s.per_minute(240, s.by_mob[30]) - 4) < 1e-9)
+    fails += check("last 60 s window", s.last_minute(130) == 5, s.last_minute(130))
+
     print("ALL OK" if not fails else f"{fails} FAILED")
     return 1 if fails else 0
 
