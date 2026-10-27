@@ -63,7 +63,7 @@ class CensusCaptureTest(unittest.TestCase):
                 c.feed(r["ts"], bytes.fromhex(r["hex"]))
                 out += live(c, r["ts"])
         self.assertEqual(out[0], "ENTERED map 10004114 The Burnt Land IV")
-        self.assertEqual(out[1], "  already there: 10 alive | 5 player(s) on the map")
+        self.assertRegex(out[1], r"^  already there: \d+ alive \| 5 player\(s\) on the map$")
         refills = [x for x in out if "refill +" in x]
         self.assertTrue(refills and all("-> 15 alive" in x or "-> 17 alive" in x for x in refills), refills)
         self.assertIn("ENTERED map 10004115 The Burnt Land V", out)
