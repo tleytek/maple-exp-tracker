@@ -156,3 +156,17 @@ game's network adapter by itself.
   from the OCR tracker on first run).
 - Protocol notes: `maplepackets.py` (decoder), `killparse.py`, `statparse.py`.
   Opcodes can change when the game is patched.
+
+### Map census (`census.py`)
+
+Logs, for every map you visit, the most monsters alive at once, how many
+players were on the map, how full each refill tops the map up, and the time
+between refills. It answers map-capacity questions from the server's own
+packets, with no counting by hand. Same Wireshark requirement and same
+watch-only rule as the packet tracker.
+
+    .venv\Scripts\python.exe census.py --names path\to\osms\maps.json
+
+Start it, then change map or channel once (the census needs to see you
+arrive). Each map visit prints one line and is appended to `census.jsonl`.
+`--pcap file.pcapng` replays a saved capture instead.
