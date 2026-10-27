@@ -2,7 +2,7 @@ import json
 import os
 import unittest
 
-from census import MapCensus, field_map_id, user_enter, format_summary
+from census import LiveLines, MapCensus, field_map_id, user_enter, format_summary
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, "tests", "census", "burnt_land_capture.jsonl")
@@ -52,8 +52,21 @@ class CensusCaptureTest(unittest.TestCase):
 
     def test_summary_line(self):
         line = format_summary(self.visits[0], {10004114: "The Burnt Land IV"})
-        self.assertIn("The Burnt Land IV", line)
+        self.assertIn("LEFT map 10004114 The Burnt Land IV", line)
         self.assertIn("highest alive 15 (5 players: 15)", line)
+
+    def test_live_lines_name_the_map_you_are_on(self):
+        c, live, out = MapCensus(), LiveLines({10004114: "The Burnt Land IV", 10004115: "The Burnt Land V"}), []
+        with open(FIXTURE, encoding="utf-8") as f:
+            for line in f:
+                r = json.loads(line)
+                c.feed(r["ts"], bytes.fromhex(r["hex"]))
+                out += live(c, r["ts"])
+        self.assertEqual(out[0], "ENTERED map 10004114 The Burnt Land IV")
+        self.assertEqual(out[1], "  already there: 10 alive | 5 player(s) on the map")
+        refills = [x for x in out if "refill +" in x]
+        self.assertTrue(refills and all("-> 15 alive" in x or "-> 17 alive" in x for x in refills), refills)
+        self.assertIn("ENTERED map 10004115 The Burnt Land V", out)
 
 
 class CensusPacketTest(unittest.TestCase):

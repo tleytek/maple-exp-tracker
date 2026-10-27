@@ -182,9 +182,36 @@ def format_summary(s, names=None):
     by = ", ".join(f"{p} player{'s' if p != '1' else ''}: {n}" for p, n in s["peak_alive_by_players"].items())
     gaps = sorted(g for g in s["refill_gaps"] if g < 30)
     med = gaps[len(gaps) // 2] if gaps else None
-    return (f"map {s['map']} {name} | {s['seconds']:.0f} s | highest alive {s['peak_alive']} ({by})"
+    return (f"LEFT map {s['map']} {name} | {s['seconds']:.0f} s | highest alive {s['peak_alive']} ({by})"
             f" | alive after refills {s['alive_after_refill']} | {s['refills']} refills"
             + (f", median gap {med} s" if med else ""))
+
+
+class LiveLines:
+    """Progress lines while on a map: arrival, then one line per finished refill."""
+
+    def __init__(self, names=None):
+        self.names = names or {}
+        self.visit, self.arrived, self.done, self.kills = None, False, 0, 0
+
+    def __call__(self, census, ts):
+        v, out = census.visit, []
+        if v is not self.visit:
+            self.visit, self.arrived, self.done, self.kills = v, False, 0, 0
+            if v:
+                out.append(f"ENTERED map {v.map_id} {self.names.get(v.map_id, '')}")
+        if v is None:
+            return out
+        if not self.arrived and ts - v.start >= ARRIVAL:
+            self.arrived = True
+            out.append(f"  already there: {len(v.mobs)} alive | {v.players} player(s) on the map")
+        while self.done < len(v.bursts) and (self.done < len(v.bursts) - 1 or ts - v.bursts[self.done][0] > BURST_GAP):
+            b = v.bursts[self.done]
+            self.done += 1
+            out.append(f"  {b[0] - v.start:6.1f} s  refill +{b[1]} -> {b[2]} alive | {v.kills - self.kills} died since"
+                       f" last refill | {v.players} player(s) | highest so far {v.peak}")
+            self.kills = v.kills
+        return out
 
 
 def main():
@@ -214,6 +241,8 @@ def main():
         print(f"capturing on {iface}; Ctrl+C to stop")
         lines = mp.open_tshark(iface=iface).stdout
     c = MapCensus()
+    live = LiveLines(names)
+    print("waiting to see you arrive on a map: change map or channel once", flush=True)
 
     def emit(s):
         if not s:
@@ -224,6 +253,8 @@ def main():
     try:
         for ts, _k, p in mp.decode_lines(lines):
             emit(c.feed(ts, p))
+            for line in live(c, ts):
+                print(line, flush=True)
     except KeyboardInterrupt:
         pass
     emit(c.finish())

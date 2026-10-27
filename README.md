@@ -168,5 +168,8 @@ watch-only rule as the packet tracker.
     .venv\Scripts\python.exe census.py --names path\to\osms\maps.json
 
 Start it, then change map or channel once (the census needs to see you
-arrive). Each map visit prints one line and is appended to `census.jsonl`.
+arrive). It prints `ENTERED map ...` when you arrive, a line for every refill
+while you hunt (how many it added, how many alive after it, deaths since the
+last one, players on the map), and a `LEFT map ...` summary for the map you
+just left, which is also appended to `census.jsonl`.
 `--pcap file.pcapng` replays a saved capture instead.
