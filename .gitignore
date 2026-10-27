@@ -11,3 +11,5 @@ dist/
 
 # Per-user settings (screen position of the EXP text)
 region.json
+census.jsonl
+census_raw.jsonl
