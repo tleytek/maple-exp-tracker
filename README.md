@@ -171,5 +171,12 @@ Start it, then change map or channel once (the census needs to see you
 arrive). It prints `ENTERED map ...` when you arrive, a line for every refill
 while you hunt (how many it added, how many alive after it, deaths since the
 last one, players on the map), and a `LEFT map ...` summary for the map you
-just left, which is also appended to `census.jsonl`.
+just left.
+
+Everything goes into **`census.db`** (SQLite; tables described in
+`censusdb.py`), written as it happens, so it can run for months: double-click
+**`census.bat`** and leave it open. It waits while the game is closed and
+restarts the capture if it stops. `--quiet` (what `census.bat` uses) prints only
+arrivals and departures. `--import-jsonl census.jsonl` adds visits logged by the
+older version. Roughly 30 MB per day of non-stop hunting.
 `--pcap file.pcapng` replays a saved capture instead.

@@ -13,3 +13,4 @@ dist/
 region.json
 census.jsonl
 census_raw.jsonl
+census.db

@@ -260,54 +260,87 @@ class LiveLines:
 def main():
     import argparse
     import os
+    import time
     import maplepackets as mp
+    from censusdb import CensusStore
     ap = argparse.ArgumentParser(description="Log monsters alive and players present per map visit.")
     ap.add_argument("--pcap", help="read a saved capture instead of capturing live")
     ap.add_argument("--iface", help="network adapter (default: found from the game's connection)")
-    ap.add_argument("--out", default="census.jsonl", help="append one JSON line per map visit")
+    ap.add_argument("--db", default="census.db", help="SQLite file the census adds to (see censusdb.py)")
+    ap.add_argument("--out", default="", help="also append one JSON line per map visit to this file")
     ap.add_argument("--names", help="OSMS maps.json, to print map names")
-    ap.add_argument("--raw", default="census_raw.jsonl",
-                    help="also save the packets the census reads, to re-check later ('' to skip)")
+    ap.add_argument("--raw", default="", help="also save the packets the census reads (large; for debugging)")
+    ap.add_argument("--import-jsonl", help="add the visits from an older census.jsonl to the database and exit")
+    ap.add_argument("--quiet", action="store_true", help="only print map arrivals and departures")
     a = ap.parse_args()
+    store = CensusStore(a.db)
+    if a.import_jsonl:
+        print(f"imported {store.import_jsonl(a.import_jsonl)} visits into {a.db}")
+        return
     names = {}
     if a.names and os.path.exists(a.names):
         with open(a.names, encoding="utf-8") as f:
             names = {m["id"]: m["name"] for r in json.load(f)["regions"] for m in r["maps"]}
-    if a.pcap:
-        import subprocess
-        lines = subprocess.run(mp.tshark_cmd(pcap=a.pcap), capture_output=True, text=True).stdout.splitlines()
-    else:
-        iface = a.iface
-        if not iface:
-            from packetmain import find_game_iface
-            iface, why = find_game_iface()
-            if not iface:
-                raise SystemExit(f"no game connection: {why}")
-        print(f"capturing on {iface}; Ctrl+C to stop")
-        lines = mp.open_tshark(iface=iface).stdout
     c = MapCensus()
     live = LiveLines(names)
-    print("waiting to see you arrive on a map: change map or channel once", flush=True)
 
     def emit(s):
         if not s:
             return
-        with open(a.out, "a", encoding="utf-8") as f:
-            f.write(json.dumps(s) + "\n")
+        if a.out:
+            with open(a.out, "a", encoding="utf-8") as f:
+                f.write(json.dumps(s) + "\n")
         print(format_summary(s, names), flush=True)
     keep = {OP_SET_FIELD, OP_SPAWN, OP_REMOVE, OP_MOVE, OP_USER_ENTER, OP_USER_LEAVE}
     raw = open(a.raw, "a", encoding="utf-8") if a.raw else None
-    try:
+
+    def run(lines):
         for ts, _k, p in mp.decode_lines(lines):
             if raw and mp.opcode(p) in keep:
                 raw.write(json.dumps({"ts": ts, "hex": p.hex()}) + "\n")
                 raw.flush()
-            emit(c.feed(ts, p))
+            s = c.feed(ts, p)
+            store.observe(c, ts, p, s)
+            emit(s)
             for line in live(c, ts):
-                print(line, flush=True)
+                if not a.quiet or not line.startswith("  "):
+                    print(line, flush=True)
+
+    try:
+        if a.pcap:
+            import subprocess
+            run(subprocess.run(mp.tshark_cmd(pcap=a.pcap), capture_output=True, text=True).stdout.splitlines())
+        else:
+            # Runs until Ctrl+C: waits for the game, and restarts the capture if it stops.
+            from packetmain import find_game_iface
+            print(f"census: writing to {os.path.abspath(a.db)}; Ctrl+C to stop", flush=True)
+            waiting = None
+            while True:
+                iface = a.iface
+                if not iface:
+                    iface, why = find_game_iface()
+                    if not iface:
+                        if why != waiting:
+                            print(f"waiting: {why} (retrying every 30 s)", flush=True)
+                            waiting = why
+                        time.sleep(30)
+                        continue
+                waiting = None
+                print(f"capturing on {iface}; change map or channel once so the census sees you arrive", flush=True)
+                proc = mp.open_tshark(iface=iface)
+                run(proc.stdout)
+                s = c.finish()   # the capture stopped: close the visit we were in
+                store.finish(s) if s else None
+                emit(s)
+                print("capture stopped; restarting in 10 s", flush=True)
+                time.sleep(10)
     except KeyboardInterrupt:
         pass
-    emit(c.finish())
+    s = c.finish()
+    if s:
+        store.finish(s)
+    emit(s)
+    store.close()
 
 
 if __name__ == "__main__":
