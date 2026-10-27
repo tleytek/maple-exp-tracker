@@ -55,6 +55,12 @@ class CensusCaptureTest(unittest.TestCase):
         self.assertIn("LEFT map 10004114 The Burnt Land IV", line)
         self.assertIn("highest alive 15 (5 players: 15)", line)
 
+    def test_spawn_positions_recorded(self):
+        snaps = self.visits[0]["refill_snapshots"]
+        self.assertEqual(len(snaps), 10)
+        self.assertTrue(all(s["spawned"] for s in snaps))
+        self.assertTrue(all(len(s["spawned"]) <= len(s["positions"]) <= s["alive"] for s in snaps))
+
     def test_live_lines_name_the_map_you_are_on(self):
         c, live, out = MapCensus(), LiveLines({10004114: "The Burnt Land IV", 10004115: "The Burnt Land V"}), []
         with open(FIXTURE, encoding="utf-8") as f:

@@ -11,6 +11,10 @@ Opcodes (MapleStory Classic, see killparse.py / statparse.py):
                            the u32 right after the first ff ff ff ff past our name.
   0x3C9 mob spawn          (oid, mob type) as in killparse._mob_type. On entering a map the
                            server sends one for every monster already there.
+                           The spawn position (s16 x, s16 y, client coordinates) sits 203
+                           bytes after the oid on every spawn seen so far (313/317/321 bytes).
+  0x3DC mob move          u32 oid, ..., s16 x, s16 y at 30 = where the move starts (matches the
+                           spawn position on a mob's first move, 182 of 182 on a capture)
   0x3D4 mob removed        u32 oid  (every death or removal on the map)
   0x22D user enter field   another player on the map: ... u32 char id, u32 0, u32 level,
                            u16 name length, name. Sent for everyone present when we arrive.
@@ -28,6 +32,7 @@ from statparse import find_char
 OP_SET_FIELD = 0x1A9
 OP_SPAWN = 0x3C9
 OP_REMOVE = 0x3D4
+OP_MOVE = 0x3DC
 OP_USER_ENTER = 0x22D
 OP_USER_LEAVE = 0x22E
 
@@ -48,6 +53,19 @@ def field_map_id(b):
         return None
     i = b.find(b"\xff\xff\xff\xff", n)
     return _u32(b, i + 4) if 0 <= i <= len(b) - 8 else None
+
+
+POS_AFTER_OID = 203
+
+
+def spawn_pos(b):
+    """(x, y) where a 0x3C9 spawn puts the monster, else None."""
+    o = 7 if len(b) >= 16 and b[7] != 1 and b[11] == 1 else 3
+    i = o + POS_AFTER_OID
+    if len(b) < i + 4:
+        return None
+    x, y = struct.unpack_from("<hh", b, i)
+    return (x, y) if -10000 < x < 20000 and -10000 < y < 20000 else None
 
 
 def user_enter(b):
@@ -75,6 +93,9 @@ class Visit:
         self.player_seconds = Counter()
         self.alive_seconds = Counter()
         self.bursts = []               # (ts, spawns, alive after) for refills after arrival
+        self.pos = {}                  # oid -> spawn position, for monsters that spawned after we arrived
+        self.where = {}                # oid -> latest known position (spawn, then each move)
+        self.snaps = []                # per refill: where it spawned, and every spawn position then occupied
         self.kills = 0
         self._last_ts = ts
         self._burst = None
@@ -96,7 +117,7 @@ class Visit:
         p = self.players
         self.peak_by_players[p] = max(self.peak_by_players.get(p, 0), n)
 
-    def spawn(self, ts, oid, mob):
+    def spawn(self, ts, oid, mob, pos=None):
         self._tick(ts)
         if oid in self.mobs:
             return
@@ -104,17 +125,36 @@ class Visit:
         self._note()
         if ts - self.start < ARRIVAL:
             return
+        if pos:
+            self.pos[oid] = pos
+            self.where[oid] = pos
         if self._burst and ts - self._burst[0] <= BURST_GAP:
             self._burst[1] += 1
             self._burst[2] = len(self.mobs)
+            snap = self.snaps[-1]
         else:
             self._burst = [ts, 1, len(self.mobs)]
             self.bursts.append(self._burst)
+            snap = {"t": round(ts - self.start, 2), "spawned": []}
+            self.snaps.append(snap)
+        if pos:
+            snap["spawned"].append(list(pos))
+        snap["alive"] = len(self.mobs)
+        snap["players"] = self.players
+        snap["occupied"] = sorted(list(self.pos[o]) for o in self.mobs if o in self.pos)
+        snap["unknown"] = sum(1 for o in self.mobs if o not in self.pos)
+        snap["positions"] = sorted(list(self.where[o]) for o in self.mobs if o in self.where)
 
     def remove(self, ts, oid):
         self._tick(ts)
+        self.pos.pop(oid, None)
+        self.where.pop(oid, None)
         if self.mobs.pop(oid, None) is not None:
             self.kills += 1
+
+    def move(self, oid, pos):
+        if oid in self.mobs:
+            self.where[oid] = pos
 
     def enter(self, ts, cid, level, name):
         self._tick(ts)
@@ -134,6 +174,7 @@ class Visit:
             "players_seconds": {str(k): round(v, 1) for k, v in sorted(self.player_seconds.items()) if v >= 0.05},
             "alive_after_refill": {str(k): v for k, v in sorted(full.items())},
             "refills": len(self.bursts), "refill_gaps": gaps, "removed": self.kills,
+            "refill_snapshots": self.snaps,
         }
 
 
@@ -160,9 +201,11 @@ class MapCensus:
         if op == OP_SPAWN:
             r = _mob_type(p)
             if r:
-                v.spawn(ts, r[0], r[1])
+                v.spawn(ts, r[0], r[1], spawn_pos(p))
         elif op == OP_REMOVE and len(p) >= 6:
             v.remove(ts, _u32(p, 2))
+        elif op == OP_MOVE and len(p) >= 34:
+            v.move(_u32(p, 2), struct.unpack_from("<hh", p, 30))
         elif op == OP_USER_ENTER:
             u = user_enter(p)
             if u:
@@ -223,6 +266,8 @@ def main():
     ap.add_argument("--iface", help="network adapter (default: found from the game's connection)")
     ap.add_argument("--out", default="census.jsonl", help="append one JSON line per map visit")
     ap.add_argument("--names", help="OSMS maps.json, to print map names")
+    ap.add_argument("--raw", default="census_raw.jsonl",
+                    help="also save the packets the census reads, to re-check later ('' to skip)")
     a = ap.parse_args()
     names = {}
     if a.names and os.path.exists(a.names):
@@ -250,8 +295,13 @@ def main():
         with open(a.out, "a", encoding="utf-8") as f:
             f.write(json.dumps(s) + "\n")
         print(format_summary(s, names), flush=True)
+    keep = {OP_SET_FIELD, OP_SPAWN, OP_REMOVE, OP_MOVE, OP_USER_ENTER, OP_USER_LEAVE}
+    raw = open(a.raw, "a", encoding="utf-8") if a.raw else None
     try:
         for ts, _k, p in mp.decode_lines(lines):
+            if raw and mp.opcode(p) in keep:
+                raw.write(json.dumps({"ts": ts, "hex": p.hex()}) + "\n")
+                raw.flush()
             emit(c.feed(ts, p))
             for line in live(c, ts):
                 print(line, flush=True)
