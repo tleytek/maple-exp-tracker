@@ -282,6 +282,28 @@ def main():
     fails += check("average after resume (3000 in 2 active min)", t.session_rate(660) == 1500,
                    t.session_rate(660))
 
+    # 25. Median pace: the typical minute, so bursts (big kills, quest turn-ins)
+    #     and lulls (town trips, deaths) don't swing time to level.
+    t = RateTracker()
+    now, exp = 0, 1000
+    big_max = 10_000_000
+    for minute in range(10):  # 600/min, except one 6000 burst and one idle minute
+        per_min = {3: 6000, 7: 0}.get(minute, 600)
+        for _ in range(12):
+            now += 5; exp += per_min // 12
+            t.feed(now, exp, pct(exp, big_max))
+    fails += check("median pace ignores one burst and one idle minute",
+                   t.median_rate(now) == 600, t.median_rate(now))
+    fails += check("time to level uses the median pace",
+                   abs(t.eta_minutes - (t.estimated_max - t.current) / 600) < 0.01,
+                   t.eta_minutes)
+    t = RateTracker()
+    t.feed(0, 1000, pct(1000, big_max)); t.feed(100, 2000, pct(2000, big_max))
+    fails += check("no median pace from < 3 full minutes", t.median_rate(100) is None,
+                   t.median_rate(100))
+    fails += check("time to level falls back to the 5 min pace meanwhile",
+                   t.eta_minutes is not None and t.eta_minutes > 0, t.eta_minutes)
+
     print("ALL PASS" if not fails else f"{fails} FAILURE(S)")
     return 1 if fails else 0
 

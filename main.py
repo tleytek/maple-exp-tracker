@@ -58,7 +58,9 @@ MESO_CONFIRM_READS = 2  # identical reads needed to accept a new meso amount
 POTION_BIG_DROP = 10  # potions; a bigger drop at once may be a covered stack
 POTION_BIG_DROP_READS = 20  # (~10s) identical reads needed to accept a big drop
 ROLLING_WINDOWS = (60, 300, 3600)  # seconds: rolling "EXP gained in the last …"
-ROLLING_WINDOW = 300  # window whose pace drives the time-to-level estimate
+ROLLING_WINDOW = 300  # window whose pace drives time to level until MEDIAN_MINUTES fill
+MEDIAN_MINUTES = 10  # time to level: median of the gains in each of the last N minutes
+MEDIAN_MIN_MINUTES = 3  # don't take a median of fewer full minutes than this
 ROLLING_MIN_SPAN = 30  # don't estimate a pace from less history than this
 MIN_REGION_SIZE = 5  # pixels
 
@@ -251,6 +253,32 @@ class RollingGains:
         gained, span = got
         return gained / (span / 60)
 
+    def _total_at(self, t):
+        """session_gained as of time 't' (the earliest logged total before the log starts)."""
+        total = self.gain_log[0][1]
+        for lt, g in self.gain_log:
+            if lt > t:
+                break
+            total = g
+        return total
+
+    def median_rate(self, now, minutes=MEDIAN_MINUTES):
+        """Typical amount per minute: the median of what was gained in each of
+        the last 'minutes' full minutes up to 'now'. A burst (big drop, quest
+        turn-in) or a lull (town trip, death) is one minute out of many, so it
+        barely moves this, unlike an average. None with fewer than
+        MEDIAN_MIN_MINUTES minutes of history."""
+        self._prune_gain_log(now)
+        if not self.gain_log:
+            return None
+        full = min(minutes, int((now - self.gain_log[0][0]) // 60))
+        if full < MEDIAN_MIN_MINUTES:
+            return None
+        per_minute = sorted(self._total_at(now - 60 * i) - self._total_at(now - 60 * (i + 1))
+                            for i in range(full))
+        mid = full // 2
+        return per_minute[mid] if full % 2 else (per_minute[mid - 1] + per_minute[mid]) / 2
+
 
 class RateTracker(RollingGains):
     def __init__(self):
@@ -395,12 +423,15 @@ class RateTracker(RollingGains):
 
     @property
     def eta_minutes(self):
-        """Time to level at the recent (rolling) pace, falling back to the
-        average while there isn't enough recent history yet."""
+        """Time to level at the median pace per minute (see median_rate),
+        falling back to the 5 min pace and then the average while there isn't
+        enough history yet."""
         mx = self.estimated_max
         rate = None
         if self.last_seen is not None:
-            rate = self.rolling_rate(self.last_seen)
+            rate = self.median_rate(self.last_seen)
+            if rate is None:
+                rate = self.rolling_rate(self.last_seen)
         rate = rate or self.rate
         if mx and rate:
             return (mx - self.current) / rate

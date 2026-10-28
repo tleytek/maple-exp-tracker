@@ -92,8 +92,10 @@ Tips:
 - **EXP / min (rolling)** is the EXP you actually gained in the last 60
   seconds, so it drops as soon as you slow down (until a minute has passed,
   the time it covers is shown in brackets, e.g. `750 (23s)`).
-- Mesos and net mesos work the same way. Time to level uses your pace over the
-  last 5 minutes.
+- Mesos and net mesos work the same way.
+- **Time to level** uses your typical minute: the median of the EXP gained in
+  each of the last 10 minutes, so one big burst or a town trip doesn't swing
+  it. For the first 3 minutes it uses the pace over the last 5 minutes.
 - Nothing resets when you're idle: idle time counts against the numbers. The
   averages restart on Reset; F1 restarts the rolling numbers.
 - Settings are saved in `%APPDATA%\MapleExpTracker`.
