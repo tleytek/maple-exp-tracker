@@ -388,7 +388,6 @@ class PacketApp(main.App):
     SECTION_TITLES = main.App.SECTION_TITLES[:-1] + ("Kills", "Session")
     BIG_ROWS = main.App.BIG_ROWS + ("kills",)
     KILL_ROWS = [("kills", "Kills (session)"), ("kill_rate", "Kills / 1 min"),
-                 ("kill_360", "Kills / 6 min"), ("kill_3600", "Kills / 60 min"),
                  ("kill_60", "Kills / min (rolling)")]
 
     def __init__(self):
@@ -681,8 +680,6 @@ class PacketApp(main.App):
         k = self.kill_tracker
         avg = k.session_rate(now) if self._session_started else None
         self.vars["kill_rate"].set("—" if avg is None else f"{avg:,.1f}")
-        for w, times in self.AVERAGE_MULTIPLIERS.items():
-            self.vars[f"kill_{w}"].set("—" if avg is None else f"{int(round(avg * times)):,}")
         self.vars["kill_60"].set(self._recent_text(k, now, 60))
 
     def _tick(self):

@@ -4,13 +4,13 @@ A small always-on-top window for MapleStory that reads the EXP text on your
 screen and shows:
 
 - current EXP and %
-- EXP per 1, 6 and 60 minutes (session average), plus a rolling EXP per minute
+- EXP per minute (session average), plus a rolling EXP per minute
 - estimated time to level
 - EXP gained and levels this session
-- mesos: current amount, mesos per 1, 6 and 60 minutes plus a rolling rate,
+- mesos: current amount, mesos per minute plus a rolling rate,
   and mesos gained / spent this session (optional, needs the inventory open)
 - potions: HP and MP potions used, what they cost, and **net mesos** (mesos
-  picked up minus potion cost) per 1, 6 and 60 minutes, rolling, and for the
+  picked up minus potion cost) per minute, rolling, and for the
   session (optional, needs the inventory open on the Use tab)
 
 It only looks at the screen (like a screenshot); it doesn't touch the game.
@@ -88,8 +88,7 @@ Tips:
   (1 → empty) isn't counted, because an empty slot looks like a closed
   inventory.
 - **EXP / 1 min** is your session average: session total divided by session
-  time (paused time doesn't count). **EXP / 6 min** and **EXP / 60 min** are
-  that average × 6 and × 60.
+  time (paused time doesn't count).
 - **EXP / min (rolling)** is the EXP you actually gained in the last 60
   seconds, so it drops as soon as you slow down (until a minute has passed,
   the time it covers is shown in brackets, e.g. `750 (23s)`).

@@ -248,8 +248,7 @@ def main():
     fails += check("net None without mesos",
                    net_mesos(MesoTracker(), hp, mp, 15, 25) is None)
 
-    # 23. Session average: total gained / session time, for EXP and mesos
-    #     (the /5 and /60 min rows are this times 5 and 60).
+    # 23. Session average: total gained / session time, for EXP and mesos.
     t = RateTracker()
     t.session_start = 0
     fails += check("no session average before any read", t.session_rate(120) is None)

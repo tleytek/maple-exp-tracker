@@ -119,8 +119,7 @@ def load_settings():
             settings["overlay_opacity"] = float(opacity)
         hidden = saved.get("hidden_rows")
         if isinstance(hidden, list):
-            renamed = {"gain_300": "gain_360", "meso_300": "meso_360", "net_300": "net_360"}
-            settings["hidden_rows"] = [renamed.get(k, k) for k in hidden if isinstance(k, str)]
+            settings["hidden_rows"] = [k for k in hidden if isinstance(k, str)]
     return settings
 
 
@@ -735,16 +734,12 @@ class App:
             ("exp", "EXP"),
             ("percent", "Progress"),
             ("rate_min", "EXP / 1 min"),
-            ("gain_360", "EXP / 6 min"),
-            ("gain_3600", "EXP / 60 min"),
             ("gain_60", "EXP / min (rolling)"),
             ("eta", "Time to level"),
             ("gained", "Gained (session)"),
             None,
             ("mesos", "Mesos"),
             ("meso_rate", "Mesos / 1 min"),
-            ("meso_360", "Mesos / 6 min"),
-            ("meso_3600", "Mesos / 60 min"),
             ("meso_60", "Mesos / min (rolling)"),
             ("meso_gained", "Mesos gained (session)"),
             ("meso_spent", "Mesos spent (session)"),
@@ -752,8 +747,6 @@ class App:
             ("pots_used", "HP / MP pots used"),
             ("pot_cost", "Potion cost (session)"),
             ("net_rate", "Net mesos / 1 min"),
-            ("net_360", "Net mesos / 6 min"),
-            ("net_3600", "Net mesos / 60 min"),
             ("net_60", "Net mesos / min (rolling)"),
             ("net_session", "Net mesos (session)"),
             None,
@@ -1521,10 +1514,6 @@ class App:
         self.vars["net_session"].set(fmt_int(net_mesos(
             m, hp, mp, self.settings["hp_price"], self.settings["mp_price"])))
 
-    # "/ 6 min" and "/ 60 min" rows: the session average per minute times
-    # this. Only "/ 1 min" is a rolling window (gained in the last 60 s).
-    AVERAGE_MULTIPLIERS = {360: 6, 3600: 60}
-
     def _refresh_recent(self):
         now = time.time()
         exp_avg = self.tracker.session_rate(now)
@@ -1540,10 +1529,6 @@ class App:
         self.vars["gain_60"].set(self._recent_text(self.tracker, now, 60))
         self.vars["meso_60"].set(self._recent_text(self.meso, now, 60))
         self.vars["net_60"].set(self._net_text(now, 60))
-        for w, times in self.AVERAGE_MULTIPLIERS.items():
-            for prefix, per_min in (("gain", exp_avg), ("meso", meso_avg), ("net", net_avg)):
-                self.vars[f"{prefix}_{w}"].set(
-                    "—" if per_min is None else f"{int(round(per_min * times)):,}")
 
     def _net_text(self, now, w):
         got = None if self.paused else self.meso.gained_in(now, w)
