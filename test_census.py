@@ -75,6 +75,25 @@ class CensusCaptureTest(unittest.TestCase):
         self.assertIn("ENTERED map 10004115 The Burnt Land V", out)
 
 
+class CensusGapTest(unittest.TestCase):
+    def test_lost_data_stops_counting_until_next_map(self):
+        c = MapCensus()
+        with open(FIXTURE, encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f]
+        for r in rows[:150]:
+            c.feed(r["ts"], bytes.fromhex(r["hex"]))
+        before = c.visit.peak
+        s = c.lost_data(rows[150]["ts"])
+        self.assertEqual(s["peak_alive"], before)
+        self.assertTrue(c.visit.resumed)
+        for r in rows[150:]:
+            if r["hex"].startswith("a901"):
+                break
+            c.feed(r["ts"], bytes.fromhex(r["hex"]))
+        self.assertEqual(c.visit.peak, 0)          # nothing counted while resumed
+        self.assertEqual(c.visit.peak_by_players, {})
+
+
 class CensusPacketTest(unittest.TestCase):
     def test_short_set_field(self):
         b = bytearray(103)

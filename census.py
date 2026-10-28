@@ -83,8 +83,11 @@ def user_enter(b):
 class Visit:
     """One stay on one map."""
 
-    def __init__(self, map_id, ts):
+    def __init__(self, map_id, ts, resumed=False):
         self.map_id, self.start, self.end = map_id, ts, ts
+        # resumed: started after the capture lost data, so the monsters already on the map are
+        # unknown; counts from it are not used (they would mix ghosts of missed deaths in)
+        self.resumed = resumed
         self.mobs = {}                 # oid -> mob type, alive now
         self.others = {}               # char id -> (level, name)
         self.peak = 0
@@ -111,6 +114,8 @@ class Visit:
         self._last_ts = self.end = ts
 
     def _note(self):
+        if self.resumed:
+            return
         n = len(self.mobs)
         if n > self.peak:
             self.peak, self.peak_types = n, Counter(self.mobs.values())
@@ -169,6 +174,7 @@ class Visit:
         full = Counter(b[2] for b in self.bursts)
         return {
             "map": self.map_id, "start": round(self.start, 3), "seconds": round(self.end - self.start, 1),
+            "resumed": self.resumed,
             "peak_alive": self.peak, "peak_types": dict(self.peak_types),
             "peak_alive_by_players": {str(k): v for k, v in sorted(self.peak_by_players.items())},
             "players_seconds": {str(k): round(v, 1) for k, v in sorted(self.player_seconds.items()) if v >= 0.05},
@@ -213,6 +219,17 @@ class MapCensus:
         elif op == OP_USER_LEAVE and len(p) >= 6:
             v.leave(ts, _u32(p, 2))
         return None
+
+    def lost_data(self, ts):
+        """The capture dropped packets (decoder resync): deaths may have been missed, so the alive
+        count can't be trusted any more. Close the visit; carry on in a 'resumed' one until the
+        next map change gives a clean start. Returns the closed visit's summary."""
+        v = self.visit
+        if v is None:
+            return None
+        s = self.finish()
+        self.visit = Visit(v.map_id, ts, resumed=True)
+        return s
 
     def finish(self):
         """Close the current visit; its summary (None if there was none)."""
@@ -294,8 +311,20 @@ def main():
     keep = {OP_SET_FIELD, OP_SPAWN, OP_REMOVE, OP_MOVE, OP_USER_ENTER, OP_USER_LEAVE}
     raw = open(a.raw, "a", encoding="utf-8") if a.raw else None
 
+    lost = []
+
+    def on_log(msg):
+        if "resync" in msg:
+            lost.append(msg)
+
     def run(lines):
-        for ts, _k, p in mp.decode_lines(lines):
+        for ts, _k, p in mp.decode_lines(lines, log=on_log):
+            if lost:
+                lost.clear()
+                s = c.lost_data(ts)
+                store.finish(s) if s else None
+                emit(s)
+                print("  (capture lost data: counts paused until the next map change)", flush=True)
             if raw and mp.opcode(p) in keep:
                 raw.write(json.dumps({"ts": ts, "hex": p.hex()}) + "\n")
                 raw.flush()
