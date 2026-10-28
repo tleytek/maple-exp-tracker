@@ -145,6 +145,12 @@ screen, so there are no regions to select. It needs
 [Wireshark](https://www.wireshark.org/) (with Npcap) installed and finds the
 game's network adapter by itself.
 
+It also lists **other players' kills** on your map (the game names the killer
+of every monster): kills this session, kills per minute while they were on the
+map with you, and kills in the last minute (`left` once they leave the map).
+Names and levels show after you change map or channel once; players who were
+already there when the tracker started show as `#<character id>` until then.
+
 - It only watches packets; nothing is sent to the game. Packet sniffing is
   still against the game's terms of service, so it is a separate exe and the
   risk is yours.

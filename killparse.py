@@ -13,7 +13,8 @@ shift when the game is patched, so they all live here):
 An own kill is a 0x44D whose killer is us. Our character id is learned from the
 first mob whose HP bar we saw drop to 0% and whose 0x44D then names its killer.
 Three signals agreed on the capture: 30 HP-bar-0 mobs, 30 0x44D with our id and
-30 EXP updates.
+30 EXP updates. Every other 0x44D is another player's kill on our map (156 deaths,
+156 0x44D on the same capture, 10 other killers).
 """
 import struct
 
@@ -45,7 +46,11 @@ class KillCounter:
         self.counted = set()
 
     def feed(self, ts, p):
-        """Feed one decoded packet; returns {'ts', 'oid', 'mob'} for an own kill, else None."""
+        """Feed one decoded packet. For a kill on the map returns
+        {'ts', 'oid', 'mob', 'killer', 'own'} ('own' = we killed it), else None.
+
+        Another player's kill can also be ours while our id is still unknown (no HP-bar
+        packet seen yet); the caller drops that id once an own kill names it."""
         if len(p) < 2:
             return None
         op = p[0] | p[1] << 8
@@ -60,10 +65,11 @@ class KillCounter:
             oid, killer = _u32(p, 2), _u32(p, 6)
             if self.self_id is None and oid in self.hp_zero:
                 self.self_id = killer
-            if killer == self.self_id and oid not in self.counted:
-                self.counted.add(oid)
-                self.hp_zero.discard(oid)
-                return {"ts": ts, "oid": oid, "mob": self.mob_type.pop(oid, None)}
             self.hp_zero.discard(oid)
-            self.mob_type.pop(oid, None)
+            mob = self.mob_type.pop(oid, None)
+            if oid in self.counted or not killer:
+                return None
+            self.counted.add(oid)
+            own = killer == self.self_id
+            return {"ts": ts, "oid": oid, "mob": mob, "killer": killer, "own": own}
         return None

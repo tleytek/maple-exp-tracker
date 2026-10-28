@@ -19,6 +19,7 @@ import time
 import tkinter as tk
 from collections import Counter, deque
 
+import census
 import main
 import maplepackets
 from exptable import to_next
@@ -199,6 +200,103 @@ class KillTracker(main.RollingGains):
         return True
 
 
+class OtherPlayers:
+    """Other players' kills on our map, from the killer id in every kill packet.
+
+    Kills per minute are over the time each player spent on the map with us (not
+    counting paused time): we only see kills on the map we're on. Names and levels
+    come from the user-enter packets, which the server sends on arrival for everyone
+    already there; players who were there before the tracker started stay "#id"
+    (with their time counted from the start) until the next map change.
+    """
+
+    def __init__(self, now=None):
+        self.info = {}         # char id -> (level, name)
+        self.present = set()   # char ids on our map now
+        self.paused = False
+        self.reset_session(time.time() if now is None else now)
+
+    def reset_session(self, now):
+        self.kills = Counter()
+        self.kill_times = {}       # char id -> deque of kill times in the last minute
+        self.seconds = Counter()   # finished time on the map with us
+        self.since = {} if self.paused else {c: now for c in self.present}
+        self.origin = now          # earliest a player we never saw enter can have been here
+
+    def _close(self, cid, now):
+        start = self.since.pop(cid, None)
+        if start is not None:
+            self.seconds[cid] += max(0.0, now - start)
+
+    def enter(self, ts, cid, level, name):
+        self.info[cid] = (level, name)
+        self.present.add(cid)
+        if not self.paused:
+            self.since.setdefault(cid, ts)
+
+    def leave(self, ts, cid):
+        self.present.discard(cid)
+        self._close(cid, ts)
+
+    def field(self, ts):
+        """We changed map or channel: nobody from the old map is with us any more."""
+        for cid in list(self.present):
+            self._close(cid, ts)
+        self.present.clear()
+        self.origin = ts
+
+    def kill(self, ts, cid):
+        if self.paused:
+            return False
+        if cid not in self.present:  # here since before we started watching
+            self.present.add(cid)
+            self.since.setdefault(cid, self.origin)
+        self.kills[cid] += 1
+        self.kill_times.setdefault(cid, deque()).append(ts)
+        return True
+
+    def forget(self, cid):
+        """Our own id (learned late): not another player."""
+        for d in (self.info, self.kills, self.kill_times, self.seconds, self.since):
+            d.pop(cid, None)
+        self.present.discard(cid)
+
+    def pause(self, now):
+        for cid in list(self.since):
+            self._close(cid, now)
+        self.paused = True
+
+    def resume(self, now):
+        self.paused = False
+        for cid in self.present:
+            self.since.setdefault(cid, now)
+
+    def seconds_with_us(self, cid, now):
+        start = self.since.get(cid)
+        return self.seconds[cid] + (max(0.0, now - start) if start is not None else 0.0)
+
+    def rate(self, cid, now):
+        """Kills per minute while on the map with us; None while that's too short to say."""
+        secs = self.seconds_with_us(cid, now)
+        return None if secs < main.ROLLING_MIN_SPAN else self.kills[cid] / (secs / 60)
+
+    def last_minute(self, cid, now):
+        times = self.kill_times.get(cid, ())
+        while times and times[0] <= now - 60:
+            times.popleft()
+        return len(times)
+
+    def name(self, cid):
+        level, name = self.info.get(cid, (None, None))
+        return f"{name} ({level})" if name else f"#{cid}"
+
+    def rows(self, now):
+        """(char id, label, kills, kills/min or None, kills in the last minute, on our
+        map now) for everyone who killed something this session, most kills first."""
+        return [(cid, self.name(cid), n, self.rate(cid, now), self.last_minute(cid, now),
+                 cid in self.present) for cid, n in self.kills.most_common()]
+
+
 # ---- capture worker ------------------------------------------------------- #
 class Capture:
     """Background thread: tshark -> decoder -> PlayerState / KillCounter -> UI queue."""
@@ -232,6 +330,15 @@ class Capture:
         kill = self.kills.feed(ts, p)
         if kill:
             put(("kill", kill))
+        op = maplepackets.opcode(p)
+        if op == census.OP_SET_FIELD and census.field_map_id(p) is not None:
+            put(("field", ts))
+        elif op == census.OP_USER_ENTER:
+            u = census.user_enter(p)
+            if u:
+                put(("player_enter", (ts, *u)))
+        elif op == census.OP_USER_LEAVE and len(p) >= 6:
+            put(("player_leave", (ts, int.from_bytes(p[2:6], "little"))))
         # Our id is known from the first kill; pick up the level remembered for it
         if st.level is None and st.exp is not None and self.kills.self_id:
             snap = self.characters.get(str(self.kills.self_id))
@@ -277,7 +384,7 @@ class Capture:
 class PacketApp(main.App):
     TITLE = "Maple Packet Tracker"
     USES_REGIONS = False
-    EXTRA_SECTION = "Kills by mob"
+    EXTRA_SECTION = "Kill lists"
     SECTION_TITLES = main.App.SECTION_TITLES[:-1] + ("Kills", "Session")
     BIG_ROWS = main.App.BIG_ROWS + ("kills",)
     KILL_ROWS = [("kills", "Kills (session)"), ("kill_rate", "Kills / 1 min"),
@@ -288,6 +395,7 @@ class PacketApp(main.App):
         first_run_prices()
         self.extras = load_extras()
         self.kill_tracker = KillTracker()
+        self.others = OtherPlayers()
         self.pot_kind = {int(k): v for k, v in self.extras["potion_items"].items()}
         self.packet_events = queue.Queue()
         self.capture = None
@@ -316,9 +424,15 @@ class PacketApp(main.App):
         self.mob_frame.grid(row=0, column=0, sticky="ew")
         self.mob_frame.columnconfigure(0, weight=1)
         self.mob_rows = {}
-        self.image_rows = [("mobs", "Per-mob kills")]
+        # Other players' kills: name | kills | kills/min on the map with us | last minute
+        self.player_frame = tk.Frame(box, bg=self.BG)
+        self.player_frame.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.player_frame.columnconfigure(0, weight=1)
+        self.player_rows = {}
+        self.image_rows = [("mobs", "Per-mob kills"), ("players", "Other players' kills")]
         self.preview_frames = (box,)
         self._add_hideable("mobs", (self.mob_frame,))
+        self._add_hideable("players", (self.player_frame,))
 
     def _worker_loop(self):
         pass  # values come from the capture thread and _feed_tick, not OCR
@@ -346,6 +460,12 @@ class PacketApp(main.App):
                     self.log(f"remembered {name}: level {level} (updates on the next channel change)")
                 elif kind == "kill":
                     self._on_kill(val)
+                elif kind == "field":
+                    self.others.field(val)
+                elif kind == "player_enter":
+                    self.others.enter(*val)
+                elif kind == "player_leave":
+                    self.others.leave(*val)
                 elif kind == "state":
                     self._on_state(val)
         except queue.Empty:
@@ -428,6 +548,10 @@ class PacketApp(main.App):
         mob = ev["mob"]
         if self.paused:
             return
+        if not ev["own"]:
+            self.others.kill(ev["ts"], ev["killer"])
+            return
+        self.others.forget(ev["killer"])  # in case our id was learned after this one's kills
         self._start_session("first kill")
         if not self.kill_tracker.add(time.time(), mob):
             return
@@ -468,6 +592,43 @@ class PacketApp(main.App):
         self._fit_height()
         return self.mob_rows[mob]
 
+    def _player_row(self, cid):
+        if cid in self.player_rows:
+            return self.player_rows[cid]
+        if not self.player_frame.grid_slaves(row=0):  # headings, once someone has a kill
+            for c, (text, anchor) in enumerate((("Other players (Lv)", "w"), ("kills", "e"),
+                                                ("/min", "e"), ("1 min", "e"))):
+                tk.Label(self.player_frame, text=text, bg=self.BG, fg=self.DIM,
+                         font=("Segoe UI", 9), anchor=anchor).grid(row=0, column=c, sticky="ew")
+        cells = []
+        # the name takes whatever width is left; the numbers keep theirs
+        for c, (font, fg, width) in enumerate(((("Segoe UI", 10), self.FG, 1),
+                                               (("Consolas", 12, "bold"), self.ACCENT, 5),
+                                               (("Consolas", 10), self.DIM, 6),
+                                               (("Consolas", 10), self.DIM, 5))):
+            var = tk.StringVar()
+            label = tk.Label(self.player_frame, textvariable=var, bg=self.BG, fg=fg, font=font,
+                             width=width, anchor="w" if c == 0 else "e")
+            cells.append((var, label))
+        self.player_rows[cid] = cells
+        self._fit_height()
+        return cells
+
+    def _refresh_players(self, now):
+        rows = self.others.rows(now)
+        for cid in set(self.player_rows) - {r[0] for r in rows}:  # our own id, learned late
+            for _, label in self.player_rows.pop(cid):
+                label.destroy()
+        for i, (cid, label, kills, rate, last, here) in enumerate(rows, start=1):
+            cells = self._player_row(cid)
+            texts = (label, f"{kills:,}", "—" if rate is None else f"{rate:,.1f}",
+                     f"{last:,}" if here else "left")
+            for c, ((var, widget), text) in enumerate(zip(cells, texts)):
+                var.set(text)
+                if c == 0:
+                    widget.config(fg=self.FG if here else self.DIM)
+                widget.grid(row=i, column=c, sticky="ew" if c == 0 else "e")
+
     def _mob_named(self, mob, text):
         self.extras["mob_names"][str(mob)] = text.strip()
         try:
@@ -479,12 +640,19 @@ class PacketApp(main.App):
     def _trackers(self):
         return super()._trackers() + [self.kill_tracker]
 
+    def toggle_pause(self):
+        super().toggle_pause()
+        (self.others.pause if self.paused else self.others.resume)(time.time())
+
     def reset(self):
         self._session_started = False
         self.kill_tracker.reset_session()
-        for w in self.mob_frame.grid_slaves():
-            w.destroy()
+        self.others.reset_session(time.time())
+        for frame in (self.mob_frame, self.player_frame):
+            for w in frame.grid_slaves():
+                w.destroy()
         self.mob_rows = {}
+        self.player_rows = {}
         super().reset()  # also re-pauses every tracker in _trackers() when paused
         self._fit_height()
 
@@ -505,6 +673,7 @@ class PacketApp(main.App):
             _, kills, rate = self._mob_row(mob)
             kills.set(f"{n:,}")
             rate.set("—" if secs < main.ROLLING_MIN_SPAN else f"{n * 3600 / secs:,.0f}/h")
+        self._refresh_players(now)
 
     def _refresh_recent(self):
         super()._refresh_recent()
