@@ -9,6 +9,7 @@ import ctypes
 import json
 import os
 import queue
+import statistics
 import sys
 import threading
 import time
@@ -236,15 +237,6 @@ class RollingGains:
             paused += now - self.paused_since
         return max(0.0, now - self.session_start - paused)
 
-    def session_rate(self, now):
-        """Average per minute over the whole session: total gained divided by
-        the (unpaused) session time. None until something has been read, or
-        while the session is too short to say."""
-        secs = self.session_seconds(now)
-        if self.current is None or secs < ROLLING_MIN_SPAN:
-            return None
-        return self.session_gained / (secs / 60)
-
     def rolling_rate(self, now, window=ROLLING_WINDOW):
         """Amount per minute over the last 'window' seconds, up to 'now'."""
         got = self.gained_in(now, window)
@@ -262,22 +254,29 @@ class RollingGains:
             total = g
         return total
 
+    def full_minutes(self, now):
+        """Whole minutes of history up to 'now' (0 when nothing has been read)."""
+        self._prune_gain_log(now)
+        return int((now - self.gain_log[0][0]) // 60) if self.gain_log else 0
+
+    def minute_gains(self, now, n):
+        """Amount gained in each of the last 'n' minutes up to 'now', newest first."""
+        self._prune_gain_log(now)
+        if not self.gain_log:
+            return [0] * n
+        return [self._total_at(now - 60 * i) - self._total_at(now - 60 * (i + 1))
+                for i in range(n)]
+
     def median_rate(self, now, minutes=MEDIAN_MINUTES):
         """Typical amount per minute: the median of what was gained in each of
         the last 'minutes' full minutes up to 'now'. A burst (big drop, quest
-        turn-in) or a lull (town trip, death) is one minute out of many, so it
-        barely moves this, unlike an average. None with fewer than
+        turn-in, mob pack) or a lull (town trip, death) is one minute out of
+        many, so it barely moves this, unlike an average. None with fewer than
         MEDIAN_MIN_MINUTES minutes of history."""
-        self._prune_gain_log(now)
-        if not self.gain_log:
+        n = min(minutes, self.full_minutes(now))
+        if n < MEDIAN_MIN_MINUTES:
             return None
-        full = min(minutes, int((now - self.gain_log[0][0]) // 60))
-        if full < MEDIAN_MIN_MINUTES:
-            return None
-        per_minute = sorted(self._total_at(now - 60 * i) - self._total_at(now - 60 * (i + 1))
-                            for i in range(full))
-        mid = full // 2
-        return per_minute[mid] if full % 2 else (per_minute[mid - 1] + per_minute[mid]) / 2
+        return statistics.median(self.minute_gains(now, n))
 
 
 class RateTracker(RollingGains):
@@ -570,6 +569,19 @@ def net_mesos(meso, hp, mp, hp_price, mp_price, now=None, window=None):
     return picked_up - hp_used * hp_price - mp_used * mp_price
 
 
+def net_median(meso, hp, mp, hp_price, mp_price, now, minutes=MEDIAN_MINUTES):
+    """Typical net mesos per minute: for each of the last 'minutes' full
+    minutes, mesos picked up minus the cost of potions used in that minute,
+    then the median (see RollingGains.median_rate). None with fewer than
+    MEDIAN_MIN_MINUTES minutes of meso history."""
+    n = min(minutes, meso.full_minutes(now))
+    if n < MEDIAN_MIN_MINUTES:
+        return None
+    per_minute = [m - h * hp_price - p * mp_price for m, h, p in zip(
+        meso.minute_gains(now, n), hp.minute_gains(now, n), mp.minute_gains(now, n))]
+    return statistics.median(per_minute)
+
+
 # --------------------------------------------------------------------------- #
 # Region selector (drag a box over a frozen screenshot)
 # --------------------------------------------------------------------------- #
@@ -758,26 +770,26 @@ class App:
             self._build_extra(pad)
         self._build_controls(pad)
 
-    BIG_ROWS = ("exp", "rate_min", "mesos", "meso_rate", "net_rate")
+    BIG_ROWS = ("exp", "gain_med", "mesos", "meso_med", "net_med")
 
     def _row_layout(self):
         return [
             ("exp", "EXP"),
             ("percent", "Progress"),
-            ("rate_min", "EXP / 1 min"),
+            ("gain_med", "EXP / min (median)"),
             ("gain_60", "EXP / min (rolling)"),
             ("eta", "Time to level"),
             ("gained", "Gained (session)"),
             None,
             ("mesos", "Mesos"),
-            ("meso_rate", "Mesos / 1 min"),
+            ("meso_med", "Mesos / min (median)"),
             ("meso_60", "Mesos / min (rolling)"),
             ("meso_gained", "Mesos gained (session)"),
             ("meso_spent", "Mesos spent (session)"),
             None,
             ("pots_used", "HP / MP pots used"),
             ("pot_cost", "Potion cost (session)"),
-            ("net_rate", "Net mesos / 1 min"),
+            ("net_med", "Net mesos / min (median)"),
             ("net_60", "Net mesos / min (rolling)"),
             ("net_session", "Net mesos (session)"),
             None,
@@ -1547,19 +1559,29 @@ class App:
 
     def _refresh_recent(self):
         now = time.time()
-        exp_avg = self.tracker.session_rate(now)
-        self.vars["rate_min"].set(fmt_int(exp_avg))
-        net_avg = None
-        meso_avg = self.meso.session_rate(now)
-        if meso_avg is not None:
-            net = net_mesos(self.meso, self.potions["hp"], self.potions["mp"],
-                            self.settings["hp_price"], self.settings["mp_price"])
-            net_avg = net / (self.meso.session_seconds(now) / 60)
-        self.vars["meso_rate"].set(fmt_int(meso_avg))
-        self.vars["net_rate"].set(fmt_int(net_avg))
+        self.vars["gain_med"].set(self._median_text(self.tracker, now))
+        self.vars["meso_med"].set(self._median_text(self.meso, now))
+        net = None if self.paused else net_median(
+            self.meso, self.potions["hp"], self.potions["mp"],
+            self.settings["hp_price"], self.settings["mp_price"], now)
+        self.vars["net_med"].set(self._median_text(self.meso, now, net))
         self.vars["gain_60"].set(self._recent_text(self.tracker, now, 60))
         self.vars["meso_60"].set(self._recent_text(self.meso, now, 60))
         self.vars["net_60"].set(self._net_text(now, 60))
+
+    def _median_text(self, tracker, now, value=None, fmt=fmt_int):
+        """Median per minute ('value', else the tracker's own); while there's
+        less than MEDIAN_MIN_MINUTES of history, how long until it shows."""
+        if self.paused:
+            return "—"
+        if value is None:
+            value = tracker.median_rate(now)
+        if value is not None:
+            return fmt(value)
+        if not tracker.gain_log:
+            return "—"
+        left = MEDIAN_MIN_MINUTES * 60 - (now - tracker.gain_log[0][0])
+        return f"— (in {max(1, int(left))}s)"
 
     def _net_text(self, now, w):
         got = None if self.paused else self.meso.gained_in(now, w)

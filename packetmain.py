@@ -176,6 +176,11 @@ class PacketExpTracker(main.RateTracker):
 
 
 # ---- kills ---------------------------------------------------------------- #
+def fmt_kills(v):
+    """Kills per minute: whole numbers as is, a median between two as x.5."""
+    return f"{v:,.1f}".removesuffix(".0")
+
+
 class KillTracker(main.RollingGains):
     """Kills this session, with the same rolling windows / session average as EXP."""
 
@@ -387,7 +392,7 @@ class PacketApp(main.App):
     EXTRA_SECTION = "Kill lists"
     SECTION_TITLES = main.App.SECTION_TITLES[:-1] + ("Kills", "Session")
     BIG_ROWS = main.App.BIG_ROWS + ("kills",)
-    KILL_ROWS = [("kills", "Kills (session)"), ("kill_rate", "Kills / 1 min"),
+    KILL_ROWS = [("kills", "Kills (session)"), ("kill_med", "Kills / min (median)"),
                  ("kill_60", "Kills / min (rolling)")]
 
     def __init__(self):
@@ -678,8 +683,7 @@ class PacketApp(main.App):
         super()._refresh_recent()
         now = time.time()
         k = self.kill_tracker
-        avg = k.session_rate(now) if self._session_started else None
-        self.vars["kill_rate"].set("—" if avg is None else f"{avg:,.1f}")
+        self.vars["kill_med"].set(self._median_text(k, now, fmt=fmt_kills))
         self.vars["kill_60"].set(self._recent_text(k, now, 60))
 
     def _tick(self):

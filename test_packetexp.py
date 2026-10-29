@@ -20,7 +20,7 @@ def main():
         t.feed(i * 10, exp, None)
     fails += check("gains without level", t.session_gained == 155, t.session_gained)
     fails += check("no % / max without level", t.percent is None and t.estimated_max is None)
-    fails += check("rate without level", t.session_rate(60) is not None, t.session_rate(60))
+    fails += check("rolling without level", t.gained_in(30, 60) is not None, t.gained_in(30, 60))
 
     # 2. Level arrives: % and max show, gains carry on.
     t.full = LV45

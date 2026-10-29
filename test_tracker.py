@@ -1,7 +1,7 @@
 """Tests for RateTracker. Run: .venv\\Scripts\\python.exe test_tracker.py"""
 import sys
 
-from main import MesoTracker, PotionTracker, RateTracker, net_mesos
+from main import MesoTracker, PotionTracker, RateTracker, net_median, net_mesos
 
 MAX = 28980  # level 22 EXP requirement seen in game
 
@@ -248,23 +248,20 @@ def main():
     fails += check("net None without mesos",
                    net_mesos(MesoTracker(), hp, mp, 15, 25) is None)
 
-    # 23. Session average: total gained / session time, for EXP and mesos.
-    t = RateTracker()
-    t.session_start = 0
-    fails += check("no session average before any read", t.session_rate(120) is None)
-    t.feed(10, 1000, pct(1000))
-    t.feed(70, 4000, pct(4000))
-    fails += check("no session average from <30s", t.session_rate(20) is None)
-    fails += check("session average = gained / minutes (3000 in 2 min)",
-                   t.session_rate(120) == 1500, t.session_rate(120))
-    fails += check("session average keeps falling while idle",
-                   t.session_rate(240) == 750, t.session_rate(240))
-    m = MesoTracker()
-    m.session_start = 0
-    for now, v in ((1, 100), (2, 100), (30, 700), (31, 700)):
-        m.feed(now, v)
-    fails += check("meso session average (600 in 1 min)", m.session_rate(60) == 600,
-                   m.session_rate(60))
+    # 23. Net mesos median: per minute, mesos picked up minus potions used
+    #     in that same minute, then the median.
+    m, hp, mp = MesoTracker(), PotionTracker("HP"), PotionTracker("MP")
+    v, pots = 1000, 500
+    for s in range(0, 361):  # 6 min: 600 mesos/min, 6 HP pots/min; minute 4 a 9000 drop
+        if s % 10 == 0 and s:
+            v += 100 + (9000 if s == 230 else 0)
+            pots -= 1
+        for _ in range(2):  # identical reads confirm a change
+            m.feed(s, v); hp.feed(s, pots)
+    fails += check("net median = 600 - 6*15 (drop ignored)",
+                   net_median(m, hp, mp, 15, 25, 360) == 510, net_median(m, hp, mp, 15, 25, 360))
+    fails += check("no net median without 3 min of mesos",
+                   net_median(MesoTracker(), hp, mp, 15, 25, 360) is None)
 
     # 24. Paused time doesn't count as session time.
     t = RateTracker()
@@ -274,13 +271,9 @@ def main():
     t.pause(60)
     fails += check("session clock stops while paused", t.session_seconds(600) == 60,
                    t.session_seconds(600))
-    fails += check("average frozen while paused", t.session_rate(600) == 3000,
-                   t.session_rate(600))
     t.resume(600)
     fails += check("clock runs again after resume", t.session_seconds(660) == 120,
                    t.session_seconds(660))
-    fails += check("average after resume (3000 in 2 active min)", t.session_rate(660) == 1500,
-                   t.session_rate(660))
 
     # 25. Median pace: the typical minute, so bursts (big kills, quest turn-ins)
     #     and lulls (town trips, deaths) don't swing time to level.

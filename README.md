@@ -4,13 +4,13 @@ A small always-on-top window for MapleStory that reads the EXP text on your
 screen and shows:
 
 - current EXP and %
-- EXP per minute (session average), plus a rolling EXP per minute
+- EXP per minute: rolling (last 60 s) and median (typical minute)
 - estimated time to level
 - EXP gained and levels this session
-- mesos: current amount, mesos per minute plus a rolling rate,
+- mesos: current amount, mesos per minute (rolling and median),
   and mesos gained / spent this session (optional, needs the inventory open)
 - potions: HP and MP potions used, what they cost, and **net mesos** (mesos
-  picked up minus potion cost) per minute, rolling, and for the
+  picked up minus potion cost) per minute (rolling and median) and for the
   session (optional, needs the inventory open on the Use tab)
 
 It only looks at the screen (like a screenshot); it doesn't touch the game.
@@ -87,17 +87,19 @@ Tips:
   hiding a stack isn't counted as potions used. The last potion of a region
   (1 → empty) isn't counted, because an empty slot looks like a closed
   inventory.
-- **EXP / 1 min** is your session average: session total divided by session
-  time (paused time doesn't count).
 - **EXP / min (rolling)** is the EXP you actually gained in the last 60
   seconds, so it drops as soon as you slow down (until a minute has passed,
   the time it covers is shown in brackets, e.g. `750 (23s)`).
-- Mesos and net mesos work the same way.
-- **Time to level** uses your typical minute: the median of the EXP gained in
-  each of the last 10 minutes, so one big burst or a town trip doesn't swing
-  it. For the first 3 minutes it uses the pace over the last 5 minutes.
-- Nothing resets when you're idle: idle time counts against the numbers. The
-  averages restart on Reset; F1 restarts the rolling numbers.
+- **EXP / min (median)** is your typical minute: the median of the EXP gained
+  in each of the last 10 minutes, so one big burst or a town trip doesn't
+  swing it. It shows after 3 minutes (until then: `— (in 95s)`).
+- Mesos, net mesos and kills work the same way (net mesos per minute is
+  mesos picked up minus the potions used in that same minute).
+- **Time to level** uses the median EXP per minute; for the first 3 minutes
+  it uses the pace over the last 5 minutes.
+- Nothing resets when you're idle: idle minutes count in the rolling number
+  and, once they're most of the last 10 minutes, in the median. Reset
+  restarts both; F1 restarts them for EXP.
 - Settings are saved in `%APPDATA%\MapleExpTracker`.
 - When a read fails or a reading is rejected while MapleStory is the focused
   window, the app saves what it saw (the region's image and a full

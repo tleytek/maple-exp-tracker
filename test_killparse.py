@@ -83,20 +83,27 @@ def main():
     e = k.feed(2, pkt(0x44D, u32(7), u32(ME), u32(1)))
     fails += check("spawn variant mob type", e and e["mob"] == 20, e)
 
-    # 6. Kill session stats (same model as EXP): session average excludes paused time,
-    #    kills while paused aren't counted, rolling window counts the last 60 s.
+    # 6. Kill session stats (same model as EXP): paused time isn't session time,
+    #    kills while paused aren't counted, rolling window counts the last 60 s,
+    #    median is the typical kills per minute.
     from packetmain import KillTracker
     k = KillTracker()
     k.session_start = 0
     for t in range(0, 120, 10):  # 12 kills in 2 min
         k.add(t, 30)
-    fails += check("6 kills/min", abs(k.session_rate(120) - 6) < 1e-9, k.session_rate(120))
+    fails += check("no kill median from 2 min", k.median_rate(120) is None, k.median_rate(120))
     k.pause(120)
     fails += check("kill while paused ignored", not k.add(150, 30) and k.current == 12)
     k.resume(180)
     fails += check("paused minute not session time", k.session_seconds(240) == 180, k.session_seconds(240))
     fails += check("rolling 60 s (kills at 80-110)", k.gained_in(130, 60)[0] == 4, k.gained_in(130, 60))
     fails += check("per-mob count", k.by_mob == {30: 12}, dict(k.by_mob))
+    k = KillTracker()
+    for t in range(0, 300, 10):  # 6/min for 5 min, plus a 20-kill mob pack in minute 2
+        k.add(t, 30)
+    for _ in range(20):
+        k.add(95, 30)
+    fails += check("kill median 6/min (pack ignored)", k.median_rate(300) == 6, k.median_rate(300))
 
     # 7. Other players: kills/min over their time on the map with us.
     from packetmain import OtherPlayers
