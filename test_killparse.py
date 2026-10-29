@@ -141,6 +141,17 @@ def main():
     fails += check("reset: no kills, old time gone", not o.rows(100) and 0x111 not in o.present
                    and o.seconds_with_us(0x111, 110) == 0, o.present)
 
+    # 9. Names: players remembered from earlier sessions are named before they're
+    #    seen entering; mob ids get the game's monster names, a typed name wins.
+    o = OtherPlayers(now=0, known={0x111: (38, "Kendikos")})
+    o.kill(50, 0x111)
+    fails += check("remembered player named", o.name(0x111) == "Kendikos (38)", o.name(0x111))
+    from packetmain import mob_label
+    fails += check("mob name from game data", mob_label(30, {}) == "Fire Boar", mob_label(30, {}))
+    fails += check("typed mob name wins", mob_label(30, {"30": "Boar"}) == "Boar")
+    fails += check("cleared typed name falls back", mob_label(30, {"30": ""}) == "Fire Boar")
+    fails += check("unknown mob id", mob_label(424242, {}) == "Mob #424242")
+
     print("ALL OK" if not fails else f"{fails} FAILED")
     return 1 if fails else 0
 

@@ -24,6 +24,7 @@ import main
 import maplepackets
 from exptable import to_next
 from killparse import KillCounter
+from mobnames import MOB_NAMES
 from statparse import PlayerState
 
 APP_NAME = "MaplePacketTracker"
@@ -49,7 +50,10 @@ def extras_file():
 def load_extras():
     # characters: char id -> level / EXP / Use tab last seen, so EXP and potions work
     # on the next launch before the game resends the character info
-    extras = {"mob_names": {}, "potion_items": {}, "iface": "", "characters": {}}
+    # players: other players' char id -> [level, name], so players already on the map
+    # when the tracker starts are named (the server only sends names on arrival)
+    extras = {"mob_names": {}, "potion_items": {}, "iface": "", "characters": {},
+              "players": {}}
     try:
         with open(extras_file(), encoding="utf-8") as f:
             saved = json.load(f)
@@ -176,6 +180,13 @@ class PacketExpTracker(main.RateTracker):
 
 
 # ---- kills ---------------------------------------------------------------- #
+def mob_label(mob, typed):
+    """A name the user typed for this mob id, else the game's name, else 'Mob #id'."""
+    if mob is None:
+        return "Unknown mob"
+    return typed.get(str(mob)) or MOB_NAMES.get(mob) or f"Mob #{mob}"
+
+
 def fmt_kills(v):
     """Kills per minute: whole numbers as is, a median between two as x.5."""
     return f"{v:,.1f}".removesuffix(".0")
@@ -215,8 +226,8 @@ class OtherPlayers:
     (with their time counted from the start) until the next map change.
     """
 
-    def __init__(self, now=None):
-        self.info = {}         # char id -> (level, name)
+    def __init__(self, now=None, known=None):
+        self.info = dict(known or {})  # char id -> (level, name); 'known' = remembered
         self.present = set()   # char ids on our map now
         self.paused = False
         self.reset_session(time.time() if now is None else now)
@@ -399,7 +410,8 @@ class PacketApp(main.App):
         first_run_prices()
         self.extras = load_extras()
         self.kill_tracker = KillTracker()
-        self.others = OtherPlayers()
+        self.others = OtherPlayers(known={int(c): tuple(v) for c, v in
+                                          self.extras["players"].items()})
         self.pot_kind = {int(k): v for k, v in self.extras["potion_items"].items()}
         self.packet_events = queue.Queue()
         self.capture = None
@@ -468,6 +480,7 @@ class PacketApp(main.App):
                     self.others.field(val)
                 elif kind == "player_enter":
                     self.others.enter(*val)
+                    self._remember_player(*val[1:])
                 elif kind == "player_leave":
                     self.others.leave(*val)
                 elif kind == "state":
@@ -556,6 +569,7 @@ class PacketApp(main.App):
             self.others.kill(ev["ts"], ev["killer"])
             return
         self.others.forget(ev["killer"])  # in case our id was learned after this one's kills
+        self.extras["players"].pop(str(ev["killer"]), None)
         self._start_session("first kill")
         if not self.kill_tracker.add(time.time(), mob):
             return
@@ -573,9 +587,7 @@ class PacketApp(main.App):
         self.log(f"{why}: session clock started")
 
     def _mob_label(self, mob):
-        if mob is None:
-            return "Unknown mob"
-        return self.extras["mob_names"].get(str(mob)) or f"Mob #{mob}"
+        return mob_label(mob, self.extras["mob_names"])
 
     def _mob_row(self, mob):
         if mob in self.mob_rows:
@@ -632,6 +644,15 @@ class PacketApp(main.App):
                 if c == 0:
                     widget.config(fg=self.FG if here else self.DIM)
                 widget.grid(row=i, column=c, sticky="ew" if c == 0 else "e")
+
+    def _remember_player(self, cid, level, name):
+        if self.extras["players"].get(str(cid)) == [level, name]:
+            return
+        self.extras["players"][str(cid)] = [level, name]
+        try:
+            save_extras(self.extras)
+        except OSError as e:
+            self.log(f"couldn't save player names: {e}")
 
     def _mob_named(self, mob, text):
         self.extras["mob_names"][str(mob)] = text.strip()
