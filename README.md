@@ -142,8 +142,8 @@ Real captures named `<exp>_<percent>[_note].png` in `tests/` are checked too.
 ## Maple Packet Tracker (second exe)
 
 `MaplePacketTracker.exe` (`packetmain.py`) shows the same stats plus **kills**
-(total, per minute/hour, rolling, and per mob; type a name over "Mob #N" to
-label it), but reads everything from the game's network packets instead of the
+(total, median and rolling per minute, and per mob with the game's monster
+names; type over a name to rename it), but reads everything from the game's network packets instead of the
 screen, so there are no regions to select. It needs
 [Wireshark](https://www.wireshark.org/) (with Npcap) installed and finds the
 game's network adapter by itself.
@@ -152,7 +152,14 @@ It also lists **other players' kills** on your map (the game names the killer
 of every monster): kills this session, kills per minute while they were on the
 map with you, and kills in the last minute (`left` once they leave the map).
 Names and levels show after you change map or channel once; players who were
-already there when the tracker started show as `#<character id>` until then.
+already there when the tracker started show as `#<character id>` until then,
+unless the tracker has seen them before (it remembers names).
+
+**Spawn cycle:** the server refills each map every ~7.13 s. *Next spawn in*
+counts down to the next refill (it starts at the first refill it sees, and
+keeps the beat when a cycle has nothing to spawn). *Last spawn* shows how many
+monsters the last refill added and how many are alive now; the alive count
+needs one map change after starting the tracker.
 
 - It only watches packets; nothing is sent to the game. Packet sniffing is
   still against the game's terms of service, so it is a separate exe and the

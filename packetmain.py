@@ -23,7 +23,7 @@ import census
 import main
 import maplepackets
 from exptable import to_next
-from killparse import KillCounter
+from killparse import KillCounter, _mob_type
 from mobnames import MOB_NAMES
 from statparse import PlayerState
 
@@ -313,6 +313,60 @@ class OtherPlayers:
                  cid in self.present) for cid, n in self.kills.most_common()]
 
 
+# ---- spawn cycle ---------------------------------------------------------- #
+CYCLE = 7.13  # s between refills: median of 846 gaps over 41 map visits in census.db
+
+
+class SpawnCycle:
+    """When the map's next refill is due, from the monster spawn packets.
+
+    The server refills every map on a fixed timer (CYCLE). A refill arrives as a
+    burst of spawns within census.BURST_GAP; the spawns sent on entering a map
+    (within census.ARRIVAL) are the monsters already there, not a refill. The
+    countdown runs from the latest burst, in CYCLE steps when a cycle has nothing
+    to spawn. The alive count is only known after we saw a map arrival: monsters
+    already there when the tracker started were never announced to it.
+    """
+
+    def __init__(self):
+        self.alive = set()
+        self.alive_known = False
+        self.arrival_until = None
+        self.last_ts = None     # time of the latest refill burst's first spawn
+        self.last = None        # (spawned in it, alive after it or None)
+
+    @property
+    def alive_count(self):
+        return len(self.alive) if self.alive_known else None
+
+    def field(self, ts):
+        self.alive.clear()
+        self.alive_known = True
+        self.arrival_until = ts + census.ARRIVAL
+        self.last_ts = self.last = None
+
+    def spawn(self, ts, oid):
+        if oid in self.alive:
+            return
+        self.alive.add(oid)
+        if self.arrival_until is not None and ts < self.arrival_until:
+            return
+        if self.last_ts is not None and ts - self.last_ts <= census.BURST_GAP:
+            n = self.last[0] + 1
+        else:
+            self.last_ts, n = ts, 1
+        self.last = (n, self.alive_count)
+
+    def remove(self, ts, oid):
+        self.alive.discard(oid)
+
+    def next_in(self, now):
+        """Seconds until the next refill is due; None before the first refill seen."""
+        if self.last_ts is None:
+            return None
+        return CYCLE - (now - self.last_ts) % CYCLE
+
+
 # ---- capture worker ------------------------------------------------------- #
 class Capture:
     """Background thread: tshark -> decoder -> PlayerState / KillCounter -> UI queue."""
@@ -349,6 +403,12 @@ class Capture:
         op = maplepackets.opcode(p)
         if op == census.OP_SET_FIELD and census.field_map_id(p) is not None:
             put(("field", ts))
+        elif op == census.OP_SPAWN:
+            r = _mob_type(p)
+            if r:
+                put(("mob_spawn", (ts, r[0])))
+        elif op == census.OP_REMOVE and len(p) >= 6:
+            put(("mob_gone", (ts, int.from_bytes(p[2:6], "little"))))
         elif op == census.OP_USER_ENTER:
             u = census.user_enter(p)
             if u:
@@ -404,12 +464,14 @@ class PacketApp(main.App):
     SECTION_TITLES = main.App.SECTION_TITLES[:-1] + ("Kills", "Session")
     BIG_ROWS = main.App.BIG_ROWS + ("kills",)
     KILL_ROWS = [("kills", "Kills (session)"), ("kill_med", "Kills / min (median)"),
-                 ("kill_60", "Kills / min (rolling)")]
+                 ("kill_60", "Kills / min (rolling)"),
+                 ("spawn_next", "Next spawn in"), ("spawn_last", "Last spawn")]
 
     def __init__(self):
         first_run_prices()
         self.extras = load_extras()
         self.kill_tracker = KillTracker()
+        self.spawns = SpawnCycle()
         self.others = OtherPlayers(known={int(c): tuple(v) for c, v in
                                           self.extras["players"].items()})
         self.pot_kind = {int(k): v for k, v in self.extras["potion_items"].items()}
@@ -422,6 +484,7 @@ class PacketApp(main.App):
                                self.extras["characters"])
         self.set_status("Starting packet capture…")
         self.root.after(int(main.POLL_RATE * 1000), self._feed_tick)
+        self._spawn_tick()
 
     def _make_exp_tracker(self):
         return PacketExpTracker()
@@ -476,8 +539,13 @@ class PacketApp(main.App):
                     self.log(f"remembered {name}: level {level} (updates on the next channel change)")
                 elif kind == "kill":
                     self._on_kill(val)
+                elif kind == "mob_spawn":
+                    self.spawns.spawn(*val)
+                elif kind == "mob_gone":
+                    self.spawns.remove(*val)
                 elif kind == "field":
                     self.others.field(val)
+                    self.spawns.field(val)
                 elif kind == "player_enter":
                     self.others.enter(*val)
                     self._remember_player(*val[1:])
@@ -706,6 +774,21 @@ class PacketApp(main.App):
         k = self.kill_tracker
         self.vars["kill_med"].set(self._median_text(k, now, fmt=fmt_kills))
         self.vars["kill_60"].set(self._recent_text(k, now, 60))
+
+    def _spawn_tick(self):
+        """Refill countdown, a few times a second."""
+        if not self.running:
+            return
+        s = self.spawns
+        nxt = s.next_in(time.time())
+        self.vars["spawn_next"].set("— (waiting for a refill)" if nxt is None else f"{nxt:.1f} s")
+        if s.last is None:
+            self.vars["spawn_last"].set("—")
+        else:
+            alive = s.alive_count
+            self.vars["spawn_last"].set(f"+{s.last[0]}" + (f" · {alive} alive" if alive is not None
+                                                           else " · alive: change map once"))
+        self.root.after(100, self._spawn_tick)
 
     def _tick(self):
         super()._tick()
